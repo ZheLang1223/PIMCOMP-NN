@@ -50,6 +50,14 @@ GeneticAlgorithm::GeneticAlgorithm(std::string model_name_, std::string pipeline
     core_AG_type_num.resize(population_num);
     core_crossbar_num.resize(population_num);
 
+    COMM_cycle_flag.resize(MAX_CHIP);
+    MEM_cycle_flag.resize(MAX_CHIP);
+    for (int i = 0; i < MAX_CHIP; ++i)
+    {
+        COMM_cycle_flag[i].resize(1000000, 0);
+        MEM_cycle_flag[i].resize(1000000, 0);
+    }
+
     SaveIntermediateInfo();
 }
 
@@ -389,8 +397,6 @@ struct SimpleInst
 static std::vector<std::vector<std::vector<struct SimpleInst>>> SimpleInstructionList;
 static std::vector<std::vector<std::vector<struct SimpleInst>>> SimpleCOMMInstructionList;
 static std::vector<std::vector<std::vector<struct SimpleInst>>> SimpleWBInstructionList;
-bool ** COMM_cycle_flag;
-bool ** MEM_cycle_flag;
 static int visited_single[MAX_CORE] = {0};
 static double LATENCY_single[MAX_CORE] = {0};
 static double LATENCY_first[MAX_CORE] = {0};
@@ -503,12 +509,18 @@ double GeneticAlgorithm::FastEvaluationForBatch(std::vector<int> individual, std
         }
     }
 
-    COMM_cycle_flag = new bool *[MAX_CHIP];
-    for (int i = 0; i < MAX_CHIP; ++i)
-        COMM_cycle_flag[i] = new bool[1000000000];
-    MEM_cycle_flag = new bool *[MAX_CHIP];
-    for (int i = 0; i < MAX_CHIP; ++i)
-        MEM_cycle_flag[i] = new bool[1000000000];
+    current_comm_eval_id++;
+    current_mem_eval_id++;
+    if (__builtin_expect(current_comm_eval_id == 0 || current_mem_eval_id == 0, 0))
+    {
+        for (int i = 0; i < MAX_CHIP; ++i)
+        {
+            std::fill(COMM_cycle_flag[i].begin(), COMM_cycle_flag[i].end(), 0);
+            std::fill(MEM_cycle_flag[i].begin(), MEM_cycle_flag[i].end(), 0);
+        }
+        current_comm_eval_id = 1;
+        current_mem_eval_id = 1;
+    }
 
     for (int ig = 0; ig < appointed_instruction_group_num; ++ig)
     {
@@ -531,13 +543,6 @@ double GeneticAlgorithm::FastEvaluationForBatch(std::vector<int> individual, std
         sum_latency += (LATENCY_single[i] - LATENCY_first[i]) / (appointed_instruction_group_num-1) * (core_IG_num[i]-1) + LATENCY_first[i];
     }
 
-    for (int i = 0; i < MAX_CHIP; ++i)
-    {
-        delete [] COMM_cycle_flag[i];
-        delete [] MEM_cycle_flag[i];
-    }
-    delete [] COMM_cycle_flag;
-    delete [] MEM_cycle_flag;
     SimpleInstructionList.clear();
     SimpleCOMMInstructionList.clear();
     SimpleWBInstructionList.clear();
@@ -682,12 +687,18 @@ double GeneticAlgorithm::FastEvaluationForElement(std::vector<int> individual, s
         }
     }
 
-    COMM_cycle_flag = new bool *[MAX_CHIP];
-    for (int i = 0; i < MAX_CHIP; ++i)
-        COMM_cycle_flag[i] = new bool[1000000000];
-    MEM_cycle_flag = new bool *[MAX_CHIP];
-    for (int i = 0; i < MAX_CHIP; ++i)
-        MEM_cycle_flag[i] = new bool[1000000000];
+    current_comm_eval_id++;
+    current_mem_eval_id++;
+    if (__builtin_expect(current_comm_eval_id == 0 || current_mem_eval_id == 0, 0))
+    {
+        for (int i = 0; i < MAX_CHIP; ++i)
+        {
+            std::fill(COMM_cycle_flag[i].begin(), COMM_cycle_flag[i].end(), 0);
+            std::fill(MEM_cycle_flag[i].begin(), MEM_cycle_flag[i].end(), 0);
+        }
+        current_comm_eval_id = 1;
+        current_mem_eval_id = 1;
+    }
 
     for (int ig = 0; ig < appointed_instruction_group_num; ++ig)
     {
@@ -702,13 +713,6 @@ double GeneticAlgorithm::FastEvaluationForElement(std::vector<int> individual, s
             practical_time = LATENCY_single[i];
     }
 
-    for (int i = 0; i < MAX_CHIP; ++i)
-    {
-        delete [] COMM_cycle_flag[i];
-        delete [] MEM_cycle_flag[i];
-    }
-    delete [] COMM_cycle_flag;
-    delete [] MEM_cycle_flag;
     SimpleInstructionList.clear();
     SimpleCOMMInstructionList.clear();
     SimpleWBInstructionList.clear();
@@ -946,9 +950,14 @@ int GeneticAlgorithm::CheckBusBandwidth(int chip_index, long long current_time, 
     int forward_cycle = 0;
     while(needed_cycle > 0)
     {
-        if (COMM_cycle_flag[chip_index][current_time + forward_cycle] == 0)
+        size_t idx = current_time + forward_cycle;
+        if (__builtin_expect(idx >= COMM_cycle_flag[chip_index].size(), 0))
         {
-            COMM_cycle_flag[chip_index][current_time + forward_cycle] = 1;
+            COMM_cycle_flag[chip_index].resize(std::max(idx + 1048576, COMM_cycle_flag[chip_index].size() * 2), 0);
+        }
+        if (COMM_cycle_flag[chip_index][idx] != current_comm_eval_id)
+        {
+            COMM_cycle_flag[chip_index][idx] = current_comm_eval_id;
             needed_cycle --;
         }
         forward_cycle++;
@@ -962,9 +971,14 @@ int GeneticAlgorithm::CheckGlobalMemoryBandwidth(int chip_index, long long curre
     int forward_cycle = 0;
     while(needed_cycle > 0)
     {
-        if (MEM_cycle_flag[chip_index][current_time + forward_cycle] == 0)
+        size_t idx = current_time + forward_cycle;
+        if (__builtin_expect(idx >= MEM_cycle_flag[chip_index].size(), 0))
         {
-            MEM_cycle_flag[chip_index][current_time + forward_cycle] = 1;
+            MEM_cycle_flag[chip_index].resize(std::max(idx + 1048576, MEM_cycle_flag[chip_index].size() * 2), 0);
+        }
+        if (MEM_cycle_flag[chip_index][idx] != current_mem_eval_id)
+        {
+            MEM_cycle_flag[chip_index][idx] = current_mem_eval_id;
             needed_cycle --;
         }
         forward_cycle++;

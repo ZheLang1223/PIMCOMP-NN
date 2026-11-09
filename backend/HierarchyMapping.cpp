@@ -934,12 +934,13 @@ void HierarchyMapping::FastEvaluationForElement()
         }
     }
 
-    COMM_cycle_flag = new bool *[MAX_CHIP];
+    COMM_cycle_flag.resize(MAX_CHIP);
+    MEM_cycle_flag.resize(MAX_CHIP);
     for (int i = 0; i < MAX_CHIP; ++i)
-        COMM_cycle_flag[i] = new bool[1000000000];
-    MEM_cycle_flag = new bool *[MAX_CHIP];
-    for (int i = 0; i < MAX_CHIP; ++i)
-        MEM_cycle_flag[i] = new bool[1000000000];
+    {
+        COMM_cycle_flag[i].assign(4000000, 0);
+        MEM_cycle_flag[i].assign(4000000, 0);
+    }
 
     for (int ig = 0; ig < appointed_instruction_group_num; ++ig)
     {
@@ -1004,13 +1005,8 @@ void HierarchyMapping::FastEvaluationForElement()
     clock_t end_time = clock();
     std::cout << "quick evaluation time:" << double(end_time - start_time) / CLOCKS_PER_SEC << "s" << std::endl;
 
-    for (int i = 0; i < MAX_CHIP; ++i)
-    {
-        delete [] COMM_cycle_flag[i];
-        delete [] MEM_cycle_flag[i];
-    }
-    delete [] COMM_cycle_flag;
-    delete [] MEM_cycle_flag;
+    COMM_cycle_flag.clear();
+    MEM_cycle_flag.clear();
 }
 
 static double effective_BUS_bandwidth = 25600000000.0;
@@ -1204,12 +1200,13 @@ void HierarchyMapping::FastEvaluationForBatch()
         }
     }
 
-    COMM_cycle_flag = new bool *[MAX_CHIP];
+    COMM_cycle_flag.resize(MAX_CHIP);
+    MEM_cycle_flag.resize(MAX_CHIP);
     for (int i = 0; i < MAX_CHIP; ++i)
-        COMM_cycle_flag[i] = new bool[1000000000];
-    MEM_cycle_flag = new bool *[MAX_CHIP];
-    for (int i = 0; i < MAX_CHIP; ++i)
-        MEM_cycle_flag[i] = new bool[1000000000];
+    {
+        COMM_cycle_flag[i].assign(4000000, 0);
+        MEM_cycle_flag[i].assign(4000000, 0);
+    }
 
     for (int ig = 0; ig < appointed_instruction_group_num; ++ig)
     {
@@ -1279,28 +1276,31 @@ void HierarchyMapping::FastEvaluationForBatch()
                   << (LATENCY_single[i] - LATENCY_first[i]) / (appointed_instruction_group_num-1) * (core_IG_num[i]-1) + LATENCY_first[i] << std::endl;
     }
 
-    for (int i = 0; i < MAX_CHIP; ++i)
-    {
-        delete [] COMM_cycle_flag[i];
-        delete [] MEM_cycle_flag[i];
-    }
-    delete [] COMM_cycle_flag;
-    delete [] MEM_cycle_flag;
+    COMM_cycle_flag.clear();
+    MEM_cycle_flag.clear();
 }
 
 
 int HierarchyMapping::CheckBusBandwidth(int chip_index, long long current_time, int communication_needed_cycle)
 {
-    int needed_cycle = communication_needed_cycle;
     int forward_cycle = 0;
-    while(needed_cycle > 0)
+    while (forward_cycle < communication_needed_cycle)
     {
-        if (COMM_cycle_flag[chip_index][current_time + forward_cycle] == 0)
+        size_t idx = current_time + forward_cycle;
+        if (__builtin_expect(idx >= COMM_cycle_flag[chip_index].size(), 0))
         {
-            COMM_cycle_flag[chip_index][current_time + forward_cycle] = 1;
-            needed_cycle --;
+            COMM_cycle_flag[chip_index].resize(std::max(idx + 1048576, COMM_cycle_flag[chip_index].size() * 2), 0);
         }
-        forward_cycle++;
+        if (COMM_cycle_flag[chip_index][idx] == 0)
+        {
+            COMM_cycle_flag[chip_index][idx] = 1;
+            forward_cycle++;
+        }
+        else
+        {
+            forward_cycle = 0;
+            current_time++;
+        }
     }
     return forward_cycle;
 }
@@ -1308,16 +1308,24 @@ int HierarchyMapping::CheckBusBandwidth(int chip_index, long long current_time, 
 
 int HierarchyMapping::CheckGlobalMemoryBandwidth(int chip_index, long long current_time, int global_memory_needed_cycle)
 {
-    int needed_cycle = global_memory_needed_cycle;
     int forward_cycle = 0;
-    while(needed_cycle > 0)
+    while (forward_cycle < global_memory_needed_cycle)
     {
-        if (MEM_cycle_flag[chip_index][current_time + forward_cycle] == 0)
+        size_t idx = current_time + forward_cycle;
+        if (__builtin_expect(idx >= MEM_cycle_flag[chip_index].size(), 0))
         {
-            MEM_cycle_flag[chip_index][current_time + forward_cycle] = 1;
-            needed_cycle --;
+            MEM_cycle_flag[chip_index].resize(std::max(idx + 1048576, MEM_cycle_flag[chip_index].size() * 2), 0);
         }
-        forward_cycle++;
+        if (MEM_cycle_flag[chip_index][idx] == 0)
+        {
+            MEM_cycle_flag[chip_index][idx] = 1;
+            forward_cycle++;
+        }
+        else
+        {
+            forward_cycle = 0;
+            current_time++;
+        }
     }
     return forward_cycle;
 }

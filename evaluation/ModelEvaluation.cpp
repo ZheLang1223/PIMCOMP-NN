@@ -12,27 +12,20 @@ ModelEvaluation::ModelEvaluation(int index, double given_interval)
     EvaluationIndex = index;
     instruction_group_num = PIMCOMP_8_base_instruction_ir_with_placement.size();
     std::cout << "instruction_group_num:" << instruction_group_num << std::endl;
-    COMM_cycle_flag = new bool *[MAX_CHIP];
-    MEM_cycle_flag = new bool *[MAX_CHIP];
-    WB_cycle_flag = new bool *[MAX_CHIP];
     PIMCOMP_GUI_evaluation_of_core.resize(ChipH * ChipW);
+    COMM_cycle_flag.resize(MAX_CHIP);
+    MEM_cycle_flag.resize(MAX_CHIP);
+    WB_cycle_flag.resize(MAX_CHIP);
     for (int i = 0; i < MAX_CHIP; ++i)
     {
-        COMM_cycle_flag[i] = new bool[500000000];
-        MEM_cycle_flag[i] = new bool[500000000];
-        WB_cycle_flag[i] = new bool[500000000];
+        COMM_cycle_flag[i].resize(4000000, 0);
+        MEM_cycle_flag[i].resize(4000000, 0);
+        WB_cycle_flag[i].resize(4000000, 0);
     }
 }
 
 ModelEvaluation::~ModelEvaluation()
 {
-    for (int i = 0; i < MAX_CHIP; ++i)
-    {
-        delete [] COMM_cycle_flag[i];
-        delete [] MEM_cycle_flag[i];
-    }
-    delete [] COMM_cycle_flag;
-    delete [] MEM_cycle_flag;
 }
 
 
@@ -482,9 +475,14 @@ int ModelEvaluation::CheckBusBandwidth(int chip_index, long long current_time, i
     int forward_cycle = 0;
     while(needed_cycle > 0)
     {
-        if (COMM_cycle_flag[chip_index][current_time + forward_cycle] == 0)
+        size_t idx = current_time + forward_cycle;
+        if (__builtin_expect(idx >= COMM_cycle_flag[chip_index].size(), 0))
         {
-            COMM_cycle_flag[chip_index][current_time + forward_cycle] = 1;
+            COMM_cycle_flag[chip_index].resize(std::max(idx + 1048576, COMM_cycle_flag[chip_index].size() * 2), 0);
+        }
+        if (COMM_cycle_flag[chip_index][idx] == 0)
+        {
+            COMM_cycle_flag[chip_index][idx] = 1;
             needed_cycle --;
         }
         forward_cycle++;
@@ -498,9 +496,14 @@ int ModelEvaluation::CheckGlobalMemoryBandwidth(int chip_index, long long curren
     int forward_cycle = 0;
     while(needed_cycle > 0)
     {
-        if (MEM_cycle_flag[chip_index][current_time + forward_cycle] == 0)
+        size_t idx = current_time + forward_cycle;
+        if (__builtin_expect(idx >= MEM_cycle_flag[chip_index].size(), 0))
         {
-            MEM_cycle_flag[chip_index][current_time + forward_cycle] = 1;
+            MEM_cycle_flag[chip_index].resize(std::max(idx + 1048576, MEM_cycle_flag[chip_index].size() * 2), 0);
+        }
+        if (MEM_cycle_flag[chip_index][idx] == 0)
+        {
+            MEM_cycle_flag[chip_index][idx] = 1;
             needed_cycle --;
         }
         forward_cycle++;
@@ -514,9 +517,14 @@ int ModelEvaluation::CheckGlobalMemoryBandwidthWB(int chip_index, long long curr
     int forward_cycle = 0;
     while(needed_cycle > 0)
     {
-        if (WB_cycle_flag[chip_index][current_time + forward_cycle] == 0)
+        size_t idx = current_time + forward_cycle;
+        if (__builtin_expect(idx >= WB_cycle_flag[chip_index].size(), 0))
         {
-            WB_cycle_flag[chip_index][current_time + forward_cycle] = 1;
+            WB_cycle_flag[chip_index].resize(std::max(idx + 1048576, WB_cycle_flag[chip_index].size() * 2), 0);
+        }
+        if (WB_cycle_flag[chip_index][idx] == 0)
+        {
+            WB_cycle_flag[chip_index][idx] = 1;
             needed_cycle --;
         }
         forward_cycle++;

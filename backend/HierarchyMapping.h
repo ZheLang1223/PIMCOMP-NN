@@ -36,11 +36,11 @@ private:
     void FastSingleInstructionGroupEvaluation(int instruction_group_index, int core_index, int index_in_core);
     int CheckBusBandwidth(int chip_index, long long current_time, int communication_needed_cycle);
     void FastEvaluationInstructionGroupNum();
-    bool ** COMM_cycle_flag;
+    std::vector<std::vector<uint8_t>> COMM_cycle_flag;
     // Fast Evaluation For Batch Pipeline
     void FastEvaluationForBatch();
     int CheckGlobalMemoryBandwidth(int chip_index, long long current_time, int global_memory_needed_cycle);
-    bool ** MEM_cycle_flag;
+    std::vector<std::vector<uint8_t>> MEM_cycle_flag;
 };
 
 

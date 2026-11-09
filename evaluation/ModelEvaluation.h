@@ -22,9 +22,9 @@ private:
     double EVA_MVMUL_start_interval;
     int EvaluationIndex;
     int instruction_group_num;
-    bool ** COMM_cycle_flag;
-    bool ** MEM_cycle_flag;
-    bool ** WB_cycle_flag;
+    std::vector<std::vector<uint8_t>> COMM_cycle_flag;
+    std::vector<std::vector<uint8_t>> MEM_cycle_flag;
+    std::vector<std::vector<uint8_t>> WB_cycle_flag;
     void Clear();
     ////////////////////////////////////////////// Evaluate Computation //////////////////////////////////////////////
     // Get the instruction index of the SEND/RECV instruction in the core according to comm_index

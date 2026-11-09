@@ -59,6 +59,10 @@ private:
     void FastSingleInstructionGroupEvaluation(int instruction_group_index, int core_index, int index_in_core);
     int CheckBusBandwidth(int chip_index, long long current_time, int communication_needed_cycle);
     int CheckGlobalMemoryBandwidth(int chip_index, long long current_time, int global_memory_needed_cycle);
+    std::vector<std::vector<uint32_t>> COMM_cycle_flag;
+    std::vector<std::vector<uint32_t>> MEM_cycle_flag;
+    uint32_t current_comm_eval_id = 1;
+    uint32_t current_mem_eval_id = 1;
     // Mutation
     void Mutation();
     bool CheckLegality(std::vector<int> & individual, std::vector<int> & replication_num_vector, std::vector<int> & AG_type_num_vector, std::vector<int> & crossbar_num_vector, std::string Stage);
