@@ -49,6 +49,8 @@ GeneticAlgorithm::GeneticAlgorithm(std::string model_name_, std::string pipeline
     node_replication_num.resize(population_num);
     core_AG_type_num.resize(population_num);
     core_crossbar_num.resize(population_num);
+    current_fitness.resize(population_num, -1.0);
+    fitness_scratch.resize(chromosome_size);
 
     COMM_cycle_flag.resize(MAX_CHIP);
     MEM_cycle_flag.resize(MAX_CHIP);
@@ -78,6 +80,7 @@ void GeneticAlgorithm::GeneticAlgorithmOptimizing()
 void GeneticAlgorithm::Init()
 {
     srand((unsigned)time(NULL));
+    current_fitness.assign(population_num, -1.0);
     int legal_individual_index = 0;
 
     while (legal_individual_index < population_num)
@@ -312,114 +315,146 @@ void GeneticAlgorithm::InitMappingClustered(int individual_index)
 
 void GeneticAlgorithm::Select()
 {
-    std::map <double, std::vector<int>, std::less<double>> chromosome_map;
-    std::map <double, std::vector<int>, std::less<double>> replication_map;
-    std::map <double, std::vector<int>, std::less<double>> crossbar_num_map;
-    std::map <double, std::vector<int>, std::less<double>> AG_type_num_map;
-    for (int i = 0; i < population_num; ++i)
+    int current_pop = current_chromosome.size();
+    std::vector<std::pair<double, int>> ranked(current_pop);
+    for (int i = 0; i < current_pop; ++i)
     {
-        double fitness = Fitness(current_chromosome[i], node_replication_num[i]);
-        while (chromosome_map.count(fitness) != 0) // 避免出现一样的fitness
+        double fitness = (i < (int)current_fitness.size()) ? current_fitness[i] : -1.0;
+        if (fitness < 0.0)
         {
-            fitness +=  (double)(rand()) / RAND_MAX / 10;
+            fitness = Fitness(current_chromosome[i], node_replication_num[i]);
+            if (i < (int)current_fitness.size())
+                current_fitness[i] = fitness;
+            else
+                current_fitness.push_back(fitness);
         }
-        chromosome_map.insert(std::make_pair( fitness, current_chromosome[i]));
-        replication_map.insert(std::make_pair(fitness, node_replication_num[i]));
-        crossbar_num_map.insert(std::make_pair(fitness, core_crossbar_num[i]));
-        AG_type_num_map.insert(std::make_pair(fitness, core_AG_type_num[i]));
+        ranked[i] = { fitness, i };
     }
 
+    std::sort(ranked.begin(), ranked.end(), [](const std::pair<double, int>& a, const std::pair<double, int>& b) {
+        return a.first < b.first;
+    });
+
     int remain_len = ceil(population_num * remain_rate);
-    auto iter1 = chromosome_map.begin();
-    auto iter2 = replication_map.begin();
-    auto iter3 = crossbar_num_map.begin();
-    auto iter4 = AG_type_num_map.begin();
-    current_chromosome.resize(0);
-    node_replication_num.resize(0);
-    core_crossbar_num.resize(0);
-    core_AG_type_num.resize(0);
+    if (remain_len > current_pop) remain_len = current_pop;
+
+    std::vector<std::vector<int>> new_chromosome;
+    std::vector<std::vector<int>> new_node_replication;
+    std::vector<std::vector<int>> new_core_crossbar;
+    std::vector<std::vector<int>> new_core_AG_type;
+    std::vector<double> new_fitness;
+    new_chromosome.reserve(population_num);
+    new_node_replication.reserve(population_num);
+    new_core_crossbar.reserve(population_num);
+    new_core_AG_type.reserve(population_num);
+    new_fitness.reserve(population_num);
+
     for (int i = 0; i < remain_len; ++i)
     {
         if (i < 3)
         {
-            std::cout << "    " << std::fixed <<  iter1->first << std::endl;
+            std::cout << "    " << std::fixed << ranked[i].first << std::endl;
         }
-        current_chromosome.push_back(iter1->second);
-        node_replication_num.push_back(iter2->second);
-        core_crossbar_num.push_back(iter3->second);
-        core_AG_type_num.push_back(iter4->second);
-        iter1++;
-        iter2++;
-        iter3++;
-        iter4++;
+        int idx = ranked[i].second;
+        new_chromosome.push_back(std::move(current_chromosome[idx]));
+        new_node_replication.push_back(std::move(node_replication_num[idx]));
+        new_core_crossbar.push_back(std::move(core_crossbar_num[idx]));
+        new_core_AG_type.push_back(std::move(core_AG_type_num[idx]));
+        new_fitness.push_back(ranked[i].first);
     }
-    for (int i = remain_len; i < population_num; ++i)
+    for (int i = remain_len; i < current_pop; ++i)
     {
-        if( rand() % 100 < (random_select_rate * 100) )
+        if (rand() % 100 < (random_select_rate * 100))
         {
-            current_chromosome.push_back(iter1->second);
-            node_replication_num.push_back(iter2->second);
-            core_crossbar_num.push_back(iter3->second);
-            core_AG_type_num.push_back(iter4->second);
+            int idx = ranked[i].second;
+            new_chromosome.push_back(std::move(current_chromosome[idx]));
+            new_node_replication.push_back(std::move(node_replication_num[idx]));
+            new_core_crossbar.push_back(std::move(core_crossbar_num[idx]));
+            new_core_AG_type.push_back(std::move(core_AG_type_num[idx]));
+            new_fitness.push_back(ranked[i].first);
         }
-        iter1++;
-        iter2++;
-        iter3++;
-        iter4++;
     }
+    current_chromosome = std::move(new_chromosome);
+    node_replication_num = std::move(new_node_replication);
+    core_crossbar_num = std::move(new_core_crossbar);
+    core_AG_type_num = std::move(new_core_AG_type);
+    current_fitness = std::move(new_fitness);
 }
 
-double GeneticAlgorithm::Fitness(std::vector<int> individual, std::vector<int> replication_num_vector)
+static inline uint64_t HashIndividual(const std::vector<int>& chrom, const std::vector<int>& rep)
 {
+    uint64_t h = 14695981039346656037ULL;
+    for (int v : chrom)
+    {
+        h ^= (uint64_t)v;
+        h *= 1099511628211ULL;
+    }
+    for (int v : rep)
+    {
+        h ^= (uint64_t)v;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+double GeneticAlgorithm::Fitness(const std::vector<int>& individual, const std::vector<int>& replication_num_vector)
+{
+    uint64_t h = HashIndividual(individual, replication_num_vector);
+    auto it = fitness_cache.find(h);
+    if (it != fitness_cache.end())
+        return it->second;
+
+    double res = 0.0;
     if (pipeline_granularity == "batch")
     {
-        return FastEvaluationForBatch(individual, replication_num_vector);
+        res = FastEvaluationForBatch(individual, replication_num_vector);
     }
     else
     {
-        return FastEvaluationForElement(individual, replication_num_vector);
+        res = FastEvaluationForElement(individual, replication_num_vector);
     }
+    fitness_cache[h] = res;
+    return res;
 }
 
-struct SimpleInst
-{
-    std::string operation;
-    int node_index;
-    int AG_index;
-    int comm_index;
-    int instruction_index_in_core;
-    int from_core; // RECV
-    int to_core;  // SEND
-    int element_num;
-    int latency_start;
-    int latency_end;
-};
 static std::vector<std::vector<std::vector<struct SimpleInst>>> SimpleInstructionList;
 static std::vector<std::vector<std::vector<struct SimpleInst>>> SimpleCOMMInstructionList;
 static std::vector<std::vector<std::vector<struct SimpleInst>>> SimpleWBInstructionList;
 static int visited_single[MAX_CORE] = {0};
 static double LATENCY_single[MAX_CORE] = {0};
 static double LATENCY_first[MAX_CORE] = {0};
-static std::map<int, int> comm_index_2_index_in_core;
-static std::map<int, int> comm_index_2_core_index;
+static std::unordered_map<int, int> comm_index_2_index_in_core;
+static std::unordered_map<int, int> comm_index_2_core_index;
 static long long last_MVMUL_exec_start_time[MAX_CORE] = {0};
 static int MVMUL_instruction_group_core[MAX_CORE] = {0};
 static long long last_synchronous_time[MAX_CORE] = {0};
 static long long preparation_timeline[MAX_CORE] = {0};
 
-
-double GeneticAlgorithm::FastEvaluationForBatch(std::vector<int> individual, std::vector<int> replication_num_vector)
+double GeneticAlgorithm::FastEvaluationForBatch(const std::vector<int>& individual, const std::vector<int>& replication_num_vector)
 {
-    std::vector<int> fitness_individual;
-    fitness_individual.assign(individual.begin(), individual.end());
+    if (fitness_scratch.size() != individual.size())
+        fitness_scratch.resize(individual.size());
+    std::copy(individual.begin(), individual.end(), fitness_scratch.begin());
+    std::vector<int>& fitness_individual = fitness_scratch;
 
     int appointed_instruction_group_num = 2;
-    SimpleInstructionList.resize(appointed_instruction_group_num);
-    SimpleWBInstructionList.resize(appointed_instruction_group_num);
+    if (SimpleInstructionList.size() < appointed_instruction_group_num)
+    {
+        SimpleInstructionList.resize(appointed_instruction_group_num);
+        SimpleWBInstructionList.resize(appointed_instruction_group_num);
+    }
     for (int ig = 0; ig < appointed_instruction_group_num; ++ig)
     {
-        SimpleInstructionList[ig].resize(ChipH * ChipW);
-        SimpleWBInstructionList[ig].resize(ChipH * ChipW);
+        if (SimpleInstructionList[ig].size() < ChipH * ChipW)
+        {
+            SimpleInstructionList[ig].resize(ChipH * ChipW);
+            SimpleWBInstructionList[ig].resize(ChipH * ChipW);
+        }
+        for (int i = 0; i < ChipH * ChipW; ++i)
+        {
+            SimpleInstructionList[ig][i].clear();
+            SimpleWBInstructionList[ig][i].clear();
+        }
     }
 
     int comm_index = 0;
@@ -464,7 +499,7 @@ double GeneticAlgorithm::FastEvaluationForBatch(std::vector<int> individual, std
                     if (k / AG_num_per_replication == 0)
                     {
                         struct SimpleInst Instruction_ld;
-                        Instruction_ld.operation = "LD";
+                        Instruction_ld.op = SIMPLE_OP_LD;
                         Instruction_ld.element_num = input_element_num;
                         SimpleInstructionList[ig][i].push_back(Instruction_ld);
                     }
@@ -475,13 +510,13 @@ double GeneticAlgorithm::FastEvaluationForBatch(std::vector<int> individual, std
                             new_load_rate = float(PIMCOMP_node_list[node_index].param.stride_h * PIMCOMP_node_list[node_index].param.stride_w)
                                     / float(PIMCOMP_node_list[node_index].param.kernel_h * PIMCOMP_node_list[node_index].param.kernel_w);
                         struct SimpleInst Instruction_ld;
-                        Instruction_ld.operation = "LD";
+                        Instruction_ld.op = SIMPLE_OP_LD;
                         Instruction_ld.element_num = input_element_num * new_load_rate;
                         SimpleInstructionList[ig][i].push_back(Instruction_ld);
                     }
 
                     struct SimpleInst Instruction_mvmul;
-                    Instruction_mvmul.operation = "MVMUL";
+                    Instruction_mvmul.op = SIMPLE_OP_MVMUL;
                     Instruction_mvmul.node_index = node_index;
                     Instruction_mvmul.AG_index = tmp_AG_index_in_total;
                     SimpleInstructionList[ig][i].push_back(Instruction_mvmul);
@@ -489,7 +524,7 @@ double GeneticAlgorithm::FastEvaluationForBatch(std::vector<int> individual, std
                     if (AG_index_in_replication == 0)
                     {
                         struct SimpleInst Instruction_st;
-                        Instruction_st.operation = "ST";
+                        Instruction_st.op = SIMPLE_OP_ST;
                         Instruction_st.element_num = output_element_num;
                         SimpleWBInstructionList[ig][i].push_back(Instruction_st);
                     }
@@ -502,7 +537,7 @@ double GeneticAlgorithm::FastEvaluationForBatch(std::vector<int> individual, std
         }
         for (int i = 0; i < ChipH * ChipW; ++i)
         {
-            for (int j = 0; j < SimpleWBInstructionList[ig][i].size(); ++j)
+            for (size_t j = 0; j < SimpleWBInstructionList[ig][i].size(); ++j)
             {
                 SimpleInstructionList[ig][i].push_back(SimpleWBInstructionList[ig][i][j]);
             }
@@ -536,16 +571,19 @@ double GeneticAlgorithm::FastEvaluationForBatch(std::vector<int> individual, std
     double sum_latency = 0;
     for (int i = 0; i < ChipH * ChipW; ++i)
     {
-//        std::cout << "core:" << i << "  latency:" << std::fixed << std::setprecision(1)
-//                  << (LATENCY_single[i] - LATENCY_first[i]) / (appointed_instruction_group_num-1) * (core_IG_num[i]-1) + LATENCY_first[i] << std::endl;
         if (max_latency < (LATENCY_single[i] - LATENCY_first[i]) / (appointed_instruction_group_num-1) * (core_IG_num[i]-1) + LATENCY_first[i])
             max_latency = (LATENCY_single[i] - LATENCY_first[i]) / (appointed_instruction_group_num-1) * (core_IG_num[i]-1) + LATENCY_first[i];
         sum_latency += (LATENCY_single[i] - LATENCY_first[i]) / (appointed_instruction_group_num-1) * (core_IG_num[i]-1) + LATENCY_first[i];
     }
 
-    SimpleInstructionList.clear();
-    SimpleCOMMInstructionList.clear();
-    SimpleWBInstructionList.clear();
+    for (int ig = 0; ig < appointed_instruction_group_num; ++ig)
+    {
+        for (int i = 0; i < ChipH * ChipW; ++i)
+        {
+            SimpleInstructionList[ig][i].clear();
+            SimpleWBInstructionList[ig][i].clear();
+        }
+    }
     comm_index_2_index_in_core.clear();
     comm_index_2_core_index.clear();
     for (auto &v : visited_single) {v = 0;}
@@ -558,18 +596,31 @@ double GeneticAlgorithm::FastEvaluationForBatch(std::vector<int> individual, std
     return max_latency;
 }
 
-double GeneticAlgorithm::FastEvaluationForElement(std::vector<int> individual, std::vector<int> replication_num_vector)
+double GeneticAlgorithm::FastEvaluationForElement(const std::vector<int>& individual, const std::vector<int>& replication_num_vector)
 {
-    std::vector<int> fitness_individual;
-    fitness_individual.assign(individual.begin(), individual.end());
+    if (fitness_scratch.size() != individual.size())
+        fitness_scratch.resize(individual.size());
+    std::copy(individual.begin(), individual.end(), fitness_scratch.begin());
+    std::vector<int>& fitness_individual = fitness_scratch;
 
     int appointed_instruction_group_num = 1;
-    SimpleInstructionList.resize(appointed_instruction_group_num);
-    SimpleCOMMInstructionList.resize(appointed_instruction_group_num);
+    if (SimpleInstructionList.size() < appointed_instruction_group_num)
+    {
+        SimpleInstructionList.resize(appointed_instruction_group_num);
+        SimpleCOMMInstructionList.resize(appointed_instruction_group_num);
+    }
     for (int ig = 0; ig < appointed_instruction_group_num; ++ig)
     {
-        SimpleInstructionList[ig].resize(ChipH * ChipW);
-        SimpleCOMMInstructionList[ig].resize(ChipH * ChipW);
+        if (SimpleInstructionList[ig].size() < ChipH * ChipW)
+        {
+            SimpleInstructionList[ig].resize(ChipH * ChipW);
+            SimpleCOMMInstructionList[ig].resize(ChipH * ChipW);
+        }
+        for (int i = 0; i < ChipH * ChipW; ++i)
+        {
+            SimpleInstructionList[ig][i].clear();
+            SimpleCOMMInstructionList[ig][i].clear();
+        }
     }
 
     std::set<std::string> no_consider_node_set = {"OP_INPUT", "OP_FLATTEN", "OP_RESHAPE", "OP_DROPOUT", "OP_LRN",
@@ -623,7 +674,7 @@ double GeneticAlgorithm::FastEvaluationForElement(std::vector<int> individual, s
                     node_AG_appearance_num[node_index]++;
 
                     struct SimpleInst Instruction_mvmul;
-                    Instruction_mvmul.operation = "MVMUL";
+                    Instruction_mvmul.op = SIMPLE_OP_MVMUL;
                     Instruction_mvmul.node_index = node_index;
                     Instruction_mvmul.AG_index = tmp_AG_index_in_total;
                     SimpleInstructionList[ig][i].push_back(Instruction_mvmul);
@@ -654,14 +705,14 @@ double GeneticAlgorithm::FastEvaluationForElement(std::vector<int> individual, s
                             if (to_core != i)
                             {
                                 struct SimpleInst Instruction_send;
-                                Instruction_send.operation = "SEND";
+                                Instruction_send.op = SIMPLE_OP_SEND;
                                 Instruction_send.to_core = to_core;
                                 Instruction_send.element_num = output_element_num;
                                 Instruction_send.comm_index = comm_index;
                                 SimpleCOMMInstructionList[ig][i].push_back(Instruction_send);
 
                                 struct SimpleInst Instruction_recv;
-                                Instruction_recv.operation = "RECV";
+                                Instruction_recv.op = SIMPLE_OP_RECV;
                                 Instruction_recv.from_core = i;
                                 Instruction_recv.element_num = output_element_num;
                                 Instruction_recv.comm_index = comm_index;
@@ -679,7 +730,7 @@ double GeneticAlgorithm::FastEvaluationForElement(std::vector<int> individual, s
         }
         for (int i = 0; i < ChipH * ChipW; ++i)
         {
-            for (int j = 0; j < SimpleCOMMInstructionList[ig][i].size(); ++j)
+            for (size_t j = 0; j < SimpleCOMMInstructionList[ig][i].size(); ++j)
             {
                 SimpleCOMMInstructionList[ig][i][j].instruction_index_in_core = SimpleInstructionList[ig][i].size();
                 SimpleInstructionList[ig][i].push_back(SimpleCOMMInstructionList[ig][i][j]);
@@ -713,9 +764,14 @@ double GeneticAlgorithm::FastEvaluationForElement(std::vector<int> individual, s
             practical_time = LATENCY_single[i];
     }
 
-    SimpleInstructionList.clear();
-    SimpleCOMMInstructionList.clear();
-    SimpleWBInstructionList.clear();
+    for (int ig = 0; ig < appointed_instruction_group_num; ++ig)
+    {
+        for (int i = 0; i < ChipH * ChipW; ++i)
+        {
+            SimpleInstructionList[ig][i].clear();
+            SimpleCOMMInstructionList[ig][i].clear();
+        }
+    }
     comm_index_2_index_in_core.clear();
     comm_index_2_core_index.clear();
     for (auto &v : visited_single) {v = 0;}
@@ -730,7 +786,7 @@ double GeneticAlgorithm::FastEvaluationForElement(std::vector<int> individual, s
 //    return practical_time / appointed_instruction_group_num;
 }
 
- double GeneticAlgorithm::FastEvaluationInstructionGroupNum(std::vector<int> replication_num_vector)
+ double GeneticAlgorithm::FastEvaluationInstructionGroupNum(const std::vector<int>& replication_num_vector)
 {
     std::vector<int> tmp_replication_num_vector = replication_num_vector;
     double max_delay = 0.0;
@@ -813,12 +869,11 @@ void GeneticAlgorithm::FastSingleInstructionGroupEvaluation(int instruction_grou
     int instruction_ir_num = SimpleInstructionList[instruction_group_index][core_index].size();
     for (int k = index_in_core; k < instruction_ir_num; ++k)
     {
-        struct SimpleInst tmpInstruction = SimpleInstructionList[instruction_group_index][core_index][k];
-        if (tmpInstruction.operation == "SEND" || tmpInstruction.operation == "RECV")
+        const struct SimpleInst& tmpInstruction = SimpleInstructionList[instruction_group_index][core_index][k];
+        if (tmpInstruction.op == SIMPLE_OP_SEND || tmpInstruction.op == SIMPLE_OP_RECV)
         {
             int comm_index = tmpInstruction.comm_index;
             int instruction_index_in_core = tmpInstruction.instruction_index_in_core;
-            SimpleInstructionList[instruction_group_index][core_index][k].latency_start = LATENCY_single[core_index];
             if (comm_index_2_index_in_core.count(comm_index) == 0)
             {
                 comm_index_2_index_in_core.insert(std::pair<int,int>(comm_index, instruction_index_in_core));
@@ -855,43 +910,15 @@ void GeneticAlgorithm::FastSingleInstructionGroupEvaluation(int instruction_grou
                 LATENCY_single[corresponding_core_index] += real_comm_latency;
                 LATENCY_single[core_index] += real_comm_latency;
 
-                // Incomplete Synchronization Mechanism
-//                if (tmpInstruction.operation == "RECV")  // Corresponding Core Send to Current Core
-//                {
-//                    real_comm_latency = CheckBusBandwidth(0, LATENCY_single[corresponding_core_index], communication_needed_cycle);
-//                    LATENCY_single[corresponding_core_index] += real_comm_latency;  // Send Finish Time
-//                    if (LATENCY_single[core_index] < LATENCY_single[corresponding_core_index])
-//                    {
-//                        LATENCY_single[core_index] = LATENCY_single[corresponding_core_index];
-//                        last_synchronous_time[core_index] = LATENCY_single[core_index];
-//                    }
-//                }
-//                else    // Current Core Send to Corresponding Core
-//                {
-//                    real_comm_latency = CheckBusBandwidth(0, LATENCY_single[core_index], communication_needed_cycle);
-//                    LATENCY_single[core_index] += real_comm_latency;  // Send Finish Time
-//                    if (LATENCY_single[corresponding_core_index] < LATENCY_single[core_index])
-//                    {
-//                        LATENCY_single[corresponding_core_index] = LATENCY_single[core_index];
-//                        last_synchronous_time[corresponding_core_index] = LATENCY_single[corresponding_core_index];
-//                    }
-//                }
-
-                // Shared
-                SimpleInstructionList[instruction_group_index][core_index][instruction_index_in_core].latency_end = LATENCY_single[core_index];
-                SimpleInstructionList[instruction_group_index][corresponding_core_index][corresponding_instruction_index_in_core].latency_end = LATENCY_single[corresponding_core_index];
-
                 FastSingleInstructionGroupEvaluation(instruction_group_index, corresponding_core_index, corresponding_instruction_index_in_core+1);
                 FastSingleInstructionGroupEvaluation(instruction_group_index, core_index, instruction_index_in_core+1);
             }
             return;
         }
-        else if (tmpInstruction.operation == "MVMUL")
+        else if (tmpInstruction.op == SIMPLE_OP_MVMUL)
         {
-            int node_index = tmpInstruction.node_index;
             if (MVMUL_instruction_group_core[core_index] != 0)
             {
-                long long tmp = last_MVMUL_exec_start_time[core_index];
                 int real_interval = GA_MVMUL_start_interval;
                 last_MVMUL_exec_start_time[core_index] = last_MVMUL_exec_start_time[core_index] + real_interval;
                 if (last_MVMUL_exec_start_time[core_index] < last_synchronous_time[core_index])
@@ -902,7 +929,6 @@ void GeneticAlgorithm::FastSingleInstructionGroupEvaluation(int instruction_grou
             }
             else
             {
-//                last_MVMUL_exec_start_time[core_index] = LATENCY_single[core_index];
                 if (preparation_timeline[core_index] < LATENCY_single[core_index])
                     last_MVMUL_exec_start_time[core_index] = LATENCY_single[core_index];
                 else
@@ -910,30 +936,24 @@ void GeneticAlgorithm::FastSingleInstructionGroupEvaluation(int instruction_grou
                 LATENCY_single[core_index] = last_MVMUL_exec_start_time[core_index] + MVMUL_latency;
             }
             MVMUL_instruction_group_core[core_index]++;
-            SimpleInstructionList[instruction_group_index][core_index][k].latency_start = last_MVMUL_exec_start_time[core_index];
-            SimpleInstructionList[instruction_group_index][core_index][k].latency_end = LATENCY_single[core_index];
         }
-        else if (tmpInstruction.operation == "LD")
+        else if (tmpInstruction.op == SIMPLE_OP_LD)
         {
-            SimpleInstructionList[instruction_group_index][core_index][k].latency_start = preparation_timeline[core_index];
             int element_num = tmpInstruction.element_num;
             int memory_bytes_num = element_num * ArithmeticPrecision / 8;
             int memory_needed_cycle = std::ceil((double(memory_bytes_num)) / (GLOBAL_MEMORY_bandwidth / Frequency));
             int chip_index = core_index / (OneChipWidth * OneChipHeight);
             int real_mem_latency = CheckGlobalMemoryBandwidth(chip_index, preparation_timeline[core_index], memory_needed_cycle);
             preparation_timeline[core_index] = preparation_timeline[core_index] + real_mem_latency;
-            SimpleInstructionList[instruction_group_index][core_index][k].latency_end = preparation_timeline[core_index];
         }
-        else if (tmpInstruction.operation == "ST")
+        else if (tmpInstruction.op == SIMPLE_OP_ST)
         {
-            SimpleInstructionList[instruction_group_index][core_index][k].latency_start = LATENCY_single[core_index];
             int element_num = tmpInstruction.element_num;
             int memory_bytes_num = element_num * ArithmeticPrecision / 8;
             int memory_needed_cycle = std::ceil((double(memory_bytes_num)) / (GLOBAL_MEMORY_bandwidth / Frequency));
             int chip_index = core_index / (OneChipWidth * OneChipHeight);
             int real_mem_latency = CheckGlobalMemoryBandwidth(chip_index, LATENCY_single[core_index], memory_needed_cycle);
             LATENCY_single[core_index] += real_mem_latency;
-            SimpleInstructionList[instruction_group_index][core_index][k].latency_end = LATENCY_single[core_index];
         }
     }
     int next_core_index = core_index+1;
@@ -1396,6 +1416,7 @@ void GeneticAlgorithm::Mutation()
     node_replication_num.insert(node_replication_num.end(), mutation_replication_num_per_node.begin(), mutation_replication_num_per_node.end());
     core_crossbar_num.insert(core_crossbar_num.end(), mutation_crossbar_num_per_core.begin(), mutation_crossbar_num_per_core.end());
     core_AG_type_num.insert(core_AG_type_num.end(), mutation_AG_type_per_core.begin(), mutation_AG_type_per_core.end());
+    current_fitness.insert(current_fitness.end(), mutation_population.size(), -1.0);
 }
 
 void GeneticAlgorithm::PostProcess()
@@ -1558,14 +1579,11 @@ void GeneticAlgorithm::PostProcess()
               << "[AG_num:" << PIMCOMP_DSE_result_info[0].AG_num << "]" << std::endl;
 }
 
-bool GeneticAlgorithm::CheckLegality(std::vector<int> & individual, std::vector<int> & replication_num_vector, std::vector<int> & AG_type_num_vector, std::vector<int> & crossbar_num_vector, std::string Stage)
+bool GeneticAlgorithm::CheckLegality(const std::vector<int> & individual, const std::vector<int> & replication_num_vector, const std::vector<int> & AG_type_num_vector, const std::vector<int> & crossbar_num_vector, const std::string& Stage)
 {
-    std::vector<int> node_AG_check;
-    std::vector<int> core_AG_type_check;
-    std::vector<int> core_crossbar_num_check;
-    node_AG_check.resize(node_num);
-    core_AG_type_check.resize(core_num);
-    core_crossbar_num_check.resize(core_num);
+    int node_AG_check[MAX_NODE] = {0};
+    int core_AG_type_check[MAX_CORE] = {0};
+    int core_crossbar_num_check[MAX_CORE] = {0};
     for (int i = 0; i < ChipW * ChipH; ++i)
     {
         int start_address = i * max_AG_kind_per_core;
@@ -1585,7 +1603,6 @@ bool GeneticAlgorithm::CheckLegality(std::vector<int> & individual, std::vector<
         }
         if (crossbar_num_check > CoreW * CoreH)
         {
-//            std::cout << Stage  << "Core" << i << "'s Crossbar Num is " << crossbar_num_check << ", Exceeds Constraint" << std::endl;
             return false;
         }
     }
@@ -1595,7 +1612,6 @@ bool GeneticAlgorithm::CheckLegality(std::vector<int> & individual, std::vector<
         {
             if (node_AG_check[i] != node_AG_num[i] * replication_num_vector[i])
             {
-//                std::cout << Stage << "   Node " << i << "'s total AG num is " << node_AG_check[i] << " , Replication Num is " <<  replication_num_vector[i] << ", AG per node is " << node_AG_num[i] << std::endl;
                 return false;
             }
         }
@@ -1607,7 +1623,6 @@ bool GeneticAlgorithm::CheckLegality(std::vector<int> & individual, std::vector<
             return false;
         if (core_crossbar_num_check[i] != crossbar_num_vector[i])
         {
-//            std::cout << Stage << "   Core " << i << "'s total crossbar num is " << core_crossbar_num_check[i] << " , But given num is " <<  crossbar_num_vector[i] << std::endl;
             return false;
         }
     }

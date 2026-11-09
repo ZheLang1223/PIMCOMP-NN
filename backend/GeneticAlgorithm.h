@@ -5,6 +5,28 @@
 #include "PIMCOMPVariable.h"
 #include "../evaluation/EvaluationConfig.h"
 
+enum SimpleOp : uint8_t
+{
+    SIMPLE_OP_NONE = 0,
+    SIMPLE_OP_LD = 1,
+    SIMPLE_OP_ST = 2,
+    SIMPLE_OP_MVMUL = 3,
+    SIMPLE_OP_SEND = 4,
+    SIMPLE_OP_RECV = 5
+};
+
+struct SimpleInst
+{
+    uint8_t op = SIMPLE_OP_NONE;
+    int node_index = 0;
+    int AG_index = 0;
+    int comm_index = 0;
+    int instruction_index_in_core = 0;
+    int from_core = 0; // RECV
+    int to_core = 0;   // SEND
+    int element_num = 0;
+};
+
 class GeneticAlgorithm
 {
 public:
@@ -44,6 +66,9 @@ private:
     std::vector<std::vector<int>> node_replication_num;
     std::vector<std::vector<int>> core_AG_type_num;
     std::vector<std::vector<int>> core_crossbar_num;
+    std::vector<double> current_fitness;
+    std::vector<int> fitness_scratch;
+    std::unordered_map<uint64_t, double> fitness_cache;
     // Init
     void Init();
     void InitReplicating(float margin_factor, int individual_index);
@@ -52,10 +77,10 @@ private:
     void InitMappingDistributed(int individual_index);
     // Select
     void Select();
-    double Fitness(std::vector<int> individual, std::vector<int> replication_num_vector);
-    double FastEvaluationForBatch(std::vector<int> individual, std::vector<int> replication_num_vector);
-    double FastEvaluationForElement(std::vector<int> individual, std::vector<int> replication_num_vector);
-    double FastEvaluationInstructionGroupNum(std::vector<int> replication_num_vector);
+    double Fitness(const std::vector<int>& individual, const std::vector<int>& replication_num_vector);
+    double FastEvaluationForBatch(const std::vector<int>& individual, const std::vector<int>& replication_num_vector);
+    double FastEvaluationForElement(const std::vector<int>& individual, const std::vector<int>& replication_num_vector);
+    double FastEvaluationInstructionGroupNum(const std::vector<int>& replication_num_vector);
     void FastSingleInstructionGroupEvaluation(int instruction_group_index, int core_index, int index_in_core);
     int CheckBusBandwidth(int chip_index, long long current_time, int communication_needed_cycle);
     int CheckGlobalMemoryBandwidth(int chip_index, long long current_time, int global_memory_needed_cycle);
@@ -65,11 +90,10 @@ private:
     uint32_t current_mem_eval_id = 1;
     // Mutation
     void Mutation();
-    bool CheckLegality(std::vector<int> & individual, std::vector<int> & replication_num_vector, std::vector<int> & AG_type_num_vector, std::vector<int> & crossbar_num_vector, std::string Stage);
+    bool CheckLegality(const std::vector<int> & individual, const std::vector<int> & replication_num_vector, const std::vector<int> & AG_type_num_vector, const std::vector<int> & crossbar_num_vector, const std::string& Stage);
     // Post Process
     void PostProcess();
     void SaveIntermediateInfo();
 };
-
 
 #endif //PIMCOMP_OPEN_GENETICALGORITHM_H
