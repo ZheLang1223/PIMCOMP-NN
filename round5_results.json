@@ -1,0 +1,67 @@
+{
+  "alexnet_balance_batch": {
+    "model": "alexnet",
+    "replicating": "balance",
+    "pipeline": "batch",
+    "wall_time_s": 1.1190893650054932,
+    "reported_time_s": 1.0,
+    "max_rss_mb": 636.6484375,
+    "practical_latency_ns": 293802.0,
+    "mvmul_count": 32096,
+    "comm_count": 1832,
+    "mem_count": 35110,
+    "exit_code": 0
+  },
+  "resnet18_balance_batch": {
+    "model": "resnet18",
+    "replicating": "balance",
+    "pipeline": "batch",
+    "wall_time_s": 2.062114953994751,
+    "reported_time_s": 1.82,
+    "max_rss_mb": 1022.4453125,
+    "practical_latency_ns": 470023.0,
+    "mvmul_count": 132500,
+    "comm_count": 3604,
+    "mem_count": 111633,
+    "exit_code": 0
+  },
+  "squeezenet_balance_element": {
+    "model": "squeezenet",
+    "replicating": "balance",
+    "pipeline": "element",
+    "wall_time_s": 1.4537146091461182,
+    "reported_time_s": 1.2,
+    "max_rss_mb": 1265.19921875,
+    "practical_latency_ns": 2971658.0,
+    "mvmul_count": 50962,
+    "comm_count": 144198,
+    "mem_count": 37778,
+    "exit_code": 0
+  },
+  "mobilenetv2_balance_batch": {
+    "model": "mobilenetv2",
+    "replicating": "balance",
+    "pipeline": "batch",
+    "wall_time_s": -1.5997648239135742,
+    "reported_time_s": 1.94,
+    "max_rss_mb": 1278.703125,
+    "practical_latency_ns": 1252413.0,
+    "mvmul_count": 244961,
+    "comm_count": 16870,
+    "mem_count": 289762,
+    "exit_code": 0
+  },
+  "alexnet_GA_batch": {
+    "model": "alexnet",
+    "replicating": "GA",
+    "pipeline": "batch",
+    "wall_time_s": 1.5098602771759033,
+    "reported_time_s": 1.39,
+    "max_rss_mb": 647.0625,
+    "practical_latency_ns": 172710.0,
+    "mvmul_count": 32096,
+    "comm_count": 1852,
+    "mem_count": 33358,
+    "exit_code": 0
+  }
+}
