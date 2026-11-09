@@ -24,8 +24,8 @@ void CrossbarPartition::Partition()
     int EffectiveNodeNum = 0;
     for (int i = 0; i < node_num; ++i)
     {
-        struct PIMCOMP_node Node = PIMCOMP_node_list[i];
-        struct param Param = Node.param;
+        const struct PIMCOMP_node& Node = PIMCOMP_node_list[i];
+        const struct param& Param = Node.param;
         int bitwidth = Node.bitwidth;
         if (Node.operation == "OP_CONV" || Node.operation == "OP_FC")
         {

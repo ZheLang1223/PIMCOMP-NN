@@ -7,16 +7,16 @@
 InstructionOptimization::InstructionOptimization()
 {
     if (instruction_with_reload == 1) // Batch-Pipeline
-        intermediate_instruction_ir = PIMCOMP_6_base_instruction_with_input;
+        intermediate_instruction_ir = std::move(PIMCOMP_6_base_instruction_with_input);
     else  // Element-Pipeline
-        intermediate_instruction_ir = PIMCOMP_4_base_instruction_ir;
+        intermediate_instruction_ir = std::move(PIMCOMP_4_base_instruction_ir);
 }
 
 void InstructionOptimization::OptimizeInstruction()
 {
     MergePreparation();
     MergeLoadOperation();
-    PIMCOMP_7_base_instruction_ir_with_optimization = intermediate_instruction_ir;
+    PIMCOMP_7_base_instruction_ir_with_optimization = std::move(intermediate_instruction_ir);
 }
 
 void InstructionOptimization::MergePreparation()
@@ -24,7 +24,7 @@ void InstructionOptimization::MergePreparation()
     std::vector<struct PIMCOMP_4_instruction_ir> tmp_instruction_ir = std::move(intermediate_instruction_ir);
     intermediate_instruction_ir.clear();
     intermediate_instruction_ir.resize(tmp_instruction_ir.size());
-    for (int i = 0; i < tmp_instruction_ir.size(); ++i)
+    for (size_t i = 0; i < tmp_instruction_ir.size(); ++i)
     {
         if (tmp_instruction_ir[i].core_list.size() > 0)
             intermediate_instruction_ir[i].core_list.resize(ChipW * ChipH);
@@ -40,12 +40,12 @@ void InstructionOptimization::MergePreparation()
             {
                 const struct INST& tmpInstruction = src_list[k];
                 bool append = true;
-                if (k != 0)
+                if (!dst_list.empty())
                 {
                     if (tmpInstruction.operation == "LD" && tmpInstruction.stage != "BIAS")
                     {
                         const struct INST& tmpLastInstruction = dst_list.back();
-                        if (tmpLastInstruction.operation == "LD")
+                        if (tmpLastInstruction.operation == "LD" && tmpLastInstruction.stage != "BIAS")
                         {
                             long long last_rs_addr = tmpLastInstruction.source_address;
                             long long last_rs_offset = tmpLastInstruction.source_offset;
@@ -84,8 +84,8 @@ void InstructionOptimization::MergePreparation()
                     }
                     else if (tmpInstruction.operation == "LMV")
                     {
-                        const struct INST& tmpLastInstruction = src_list[k-1];
-                        if (tmpLastInstruction.operation == tmpInstruction.operation)
+                        const struct INST& tmpLastInstruction = dst_list.back();
+                        if (tmpLastInstruction.operation == "LMV")
                         {
                             long long last_rs_addr = tmpLastInstruction.source_address;
                             long long last_rs_offset = tmpLastInstruction.source_offset;
@@ -111,8 +111,8 @@ void InstructionOptimization::MergePreparation()
                     }
                     else if (tmpInstruction.operation == "LLDI")
                     {
-                        const struct INST& tmpLastInstruction = src_list[k-1];
-                        if (tmpLastInstruction.operation == tmpInstruction.operation)
+                        const struct INST& tmpLastInstruction = dst_list.back();
+                        if (tmpLastInstruction.operation == "LLDI")
                         {
                             long long last_rd_addr = tmpLastInstruction.destination_address;
                             long long last_rd_offset = tmpLastInstruction.destination_offset;
@@ -123,6 +123,33 @@ void InstructionOptimization::MergePreparation()
                             int this_element_num = tmpInstruction.element_num;
 
                             if (last_rd_addr == this_rd_addr &&
+                                last_rd_offset + last_element_num == this_rd_offset)
+                            {
+                                dst_list.back().element_num += this_element_num;
+                                append = false;
+                            }
+                        }
+                    }
+                    else if (tmpInstruction.operation == "ST" && tmpInstruction.stage != "BIAS")
+                    {
+                        const struct INST& tmpLastInstruction = dst_list.back();
+                        if (tmpLastInstruction.operation == "ST" && tmpLastInstruction.stage != "BIAS")
+                        {
+                            long long last_rs_addr = tmpLastInstruction.source_address;
+                            long long last_rs_offset = tmpLastInstruction.source_offset;
+                            long long last_rd_addr = tmpLastInstruction.destination_address;
+                            long long last_rd_offset = tmpLastInstruction.destination_offset;
+                            int last_element_num = tmpLastInstruction.element_num;
+
+                            long long this_rs_addr = tmpInstruction.source_address;
+                            long long this_rs_offset = tmpInstruction.source_offset;
+                            long long this_rd_addr = tmpInstruction.destination_address;
+                            long long this_rd_offset = tmpInstruction.destination_offset;
+                            int this_element_num = tmpInstruction.element_num;
+
+                            if (last_rs_addr == this_rs_addr &&
+                                last_rs_offset + last_element_num == this_rs_offset &&
+                                last_rd_addr == this_rd_addr &&
                                 last_rd_offset + last_element_num == this_rd_offset)
                             {
                                 dst_list.back().element_num += this_element_num;
@@ -186,11 +213,11 @@ void InstructionOptimization::MergeLoadOperation()
     std::vector<struct PIMCOMP_4_instruction_ir> tmp_instruction_ir = std::move(intermediate_instruction_ir);
     intermediate_instruction_ir.clear();
     intermediate_instruction_ir.resize(tmp_instruction_ir.size());
-    std::map<int,int> load_element_num;
-    for (int i = 0; i < tmp_instruction_ir.size(); ++i)
+    for (size_t i = 0; i < tmp_instruction_ir.size(); ++i)
     {
         if (tmp_instruction_ir[i].core_list.size() == 0)
             continue;
+        intermediate_instruction_ir[i].core_list.resize(ChipW * ChipH);
         for (int j = 0; j < ChipW * ChipH; ++j)
         {
             std::vector<std::priority_queue<struct SplitLoadInfo>> node_load_info;
@@ -209,10 +236,6 @@ void InstructionOptimization::MergeLoadOperation()
                     long long rd_offset = tmpInstruction.destination_offset;
                     int element_num = tmpInstruction.element_num;
                     int instruction_index_in_core = tmpInstruction.instruction_index_in_core;
-                    if (load_element_num.count(element_num) == 0)
-                        load_element_num[element_num] = 1;
-                    else
-                        load_element_num[element_num] ++;
                     if (element_num < 64)
                         node_load_info[node_index].push(SplitLoadInfo(node_index, rs_address, rs_offset, rd_address, rd_offset, element_num, instruction_index_in_core));
                 }
@@ -220,56 +243,39 @@ void InstructionOptimization::MergeLoadOperation()
 
             std::unordered_map<int,int> instruction_index_to_load_index; // from split load to whole load
             std::vector<struct FullLoadInfo> full_load_info_list;
-//            if (i == 0 && j == 1)
+            for (size_t n = 0; n < node_load_info.size(); ++n)
             {
-                for (int n = 0; n < node_load_info.size(); ++n)
+                long long start_addr = -1;
+                while (!node_load_info[n].empty())
                 {
-                    long long start_addr = -1;
-                    while (!node_load_info[n].empty())
+                    if (start_addr != -1 && node_load_info[n].top().rs_offset + node_load_info[n].top().element_num - start_addr <= 64)
                     {
-//                        std::cout << "node:" << n << "  " << node_load_info[n].top().rs_offset << " " << node_load_info[n].top().rs_offset + node_load_info[n].top().element_num-1;
-                        if (start_addr != -1 && node_load_info[n].top().rs_offset + node_load_info[n].top().element_num - start_addr <= 64)
-                        {
-                            long long end_addr = start_addr + 63;
-                            if (full_load_info_list.back().exec_load_index_in_core > node_load_info[n].top().instruction_index_in_core)
-                                full_load_info_list.back().exec_load_index_in_core = node_load_info[n].top().instruction_index_in_core;
-                            instruction_index_to_load_index[node_load_info[n].top().instruction_index_in_core] = full_load_info_list.size()-1;
-//                            std::cout << "      Begin:" << start_addr << "  End:" << end_addr;
-//                            int instruction_index_in_core = node_load_info[n].top().instruction_index_in_core;
-//                            int full_load_index = instruction_index_to_load_index[instruction_index_in_core];
-//                            std::cout << "  " << full_load_index << "  " << full_load_info_list[full_load_index].rd_address << std::endl;
-                        }
-                        else
-                        {
-                            start_addr = node_load_info[n].top().rs_offset;
-                            long long end_addr = start_addr + 63;
-                            struct FullLoadInfo full_load_info;
-                            full_load_info.element_num = 64;
-                            full_load_info.rs_address = node_load_info[n].top().rs_address;
-                            full_load_info.rs_offset = start_addr;
-                            full_load_info.rd_address = core_max_memory[j] + (full_load_info_list.size() * 64);
-                            full_load_info.rd_offset = 0;
-                            full_load_info.node_index = node_load_info[n].top().node_index;
-                            full_load_info.exec_load_index_in_core = node_load_info[n].top().instruction_index_in_core;
-                            full_load_info_list.push_back(full_load_info);
-                            instruction_index_to_load_index[node_load_info[n].top().instruction_index_in_core] = full_load_info_list.size()-1;
-//                            std::cout << "      Begin:" << start_addr << "  End:" << end_addr;
-//                            int instruction_index_in_core = node_load_info[n].top().instruction_index_in_core;
-//                            int full_load_index = instruction_index_to_load_index[instruction_index_in_core];
-//                            std::cout << "  " << full_load_index << "  " << full_load_info_list[full_load_index].rd_address << std::endl;
-                        }
-                        node_load_info[n].pop();
+                        if (full_load_info_list.back().exec_load_index_in_core > node_load_info[n].top().instruction_index_in_core)
+                            full_load_info_list.back().exec_load_index_in_core = node_load_info[n].top().instruction_index_in_core;
+                        instruction_index_to_load_index[node_load_info[n].top().instruction_index_in_core] = full_load_info_list.size()-1;
                     }
+                    else
+                    {
+                        start_addr = node_load_info[n].top().rs_offset;
+                        struct FullLoadInfo full_load_info;
+                        full_load_info.element_num = 64;
+                        full_load_info.rs_address = node_load_info[n].top().rs_address;
+                        full_load_info.rs_offset = start_addr;
+                        full_load_info.rd_address = core_max_memory[j] + (full_load_info_list.size() * 64);
+                        full_load_info.rd_offset = 0;
+                        full_load_info.node_index = node_load_info[n].top().node_index;
+                        full_load_info.exec_load_index_in_core = node_load_info[n].top().instruction_index_in_core;
+                        full_load_info_list.push_back(full_load_info);
+                        instruction_index_to_load_index[node_load_info[n].top().instruction_index_in_core] = full_load_info_list.size()-1;
+                    }
+                    node_load_info[n].pop();
                 }
             }
 
-
+            auto& dst_ir_list = intermediate_instruction_ir[i].core_list[j].instruction_ir_list;
+            dst_ir_list.reserve(instruction_ir_num + full_load_info_list.size());
             for (int k = 0; k < instruction_ir_num; ++k)
             {
-                if (tmp_instruction_ir[i].core_list.size() > 0)
-                    intermediate_instruction_ir[i].core_list.resize(ChipW * ChipH);
-                else
-                    continue;
                 const struct INST& tmpInstruction = src_ir_list[k];
                 int node_index = tmpInstruction.node_index;
                 int instruction_index_in_core = tmpInstruction.instruction_index_in_core;
@@ -305,7 +311,7 @@ void InstructionOptimization::MergeLoadOperation()
                         Instruction_ld.destination_offset = full_load_rd_offset;
                         Instruction_ld.element_num = full_load_element_num;
                         Instruction_ld.instruction_group_index = i;
-                        intermediate_instruction_ir[i].core_list[j].instruction_ir_list.push_back(Instruction_ld);
+                        dst_ir_list.push_back(Instruction_ld);
 
                         struct INST Instruction_vm;
                         Instruction_vm.type = VEC1OP;
@@ -319,7 +325,7 @@ void InstructionOptimization::MergeLoadOperation()
                         Instruction_vm.destination_offset = tmpInstruction.destination_offset;
                         Instruction_vm.element_num = tmpInstruction.element_num;
                         Instruction_vm.instruction_group_index = i;
-                        intermediate_instruction_ir[i].core_list[j].instruction_ir_list.push_back(Instruction_vm);
+                        dst_ir_list.push_back(Instruction_vm);
                     }
                     else
                     {
@@ -335,37 +341,15 @@ void InstructionOptimization::MergeLoadOperation()
                         Instruction_vm.destination_offset = tmpInstruction.destination_offset;
                         Instruction_vm.element_num = tmpInstruction.element_num;
                         Instruction_vm.instruction_group_index = i;
-                        intermediate_instruction_ir[i].core_list[j].instruction_ir_list.push_back(Instruction_vm);
+                        dst_ir_list.push_back(Instruction_vm);
                     }
                 }
                 else
                 {
-                    auto& out_list = intermediate_instruction_ir[i].core_list[j].instruction_ir_list;
-                    out_list.push_back(tmpInstruction);
-                    out_list.back().instruction_index_in_core = out_list.size() - 1;
+                    dst_ir_list.push_back(tmpInstruction);
+                    dst_ir_list.back().instruction_index_in_core = dst_ir_list.size() - 1;
                 }
             }
         }
     }
-
-//    int load_total_num = 0;
-//    for (auto iter = load_element_num.begin(); iter != load_element_num.end(); ++iter)
-//    {
-//        load_total_num += iter->second;
-//    }
-//    int merge_load_total_num = 0;
-//    for (auto iter = load_element_num.begin(); iter != load_element_num.end(); ++iter)
-//    {
-//        float element_num = iter->first;
-//        float load_time = iter->second;
-//        int merge_num = element_num < 50 ? load_time / std::ceil(50.0/element_num) : load_time;
-//        merge_load_total_num += merge_num;
-//        std::cout << "element_num:" << iter->first
-//                  << "    time:" << iter->second
-//                  << "    ratio:" << float(iter->second) / float(load_total_num)*100 << "%"
-//                  << "    merge:" << merge_num
-//                  << std::endl;
-//    }
-//    std::cout << "total num:" << load_total_num << std::endl;
-//    std::cout << "merge num:" << merge_load_total_num << std::endl;
 }

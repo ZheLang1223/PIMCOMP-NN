@@ -9,14 +9,14 @@
 - [x] Round 1: 编译器与构建系统升级（C++17, -O3, -march=native, -DNDEBUG），实现全模型 2.7x 平均加速，已验证提交（Commit: 007d28f）。
 - [x] Round 2: 消除海量 10^9 周期模拟数组与内存泄漏，引入动态位图与 GA Epoch ID 代际标记复位，已验证提交（Commit: 2510c1b）。
 - [x] Round 3: 消除指令优化与放置阶段深拷贝，引入移动语义、引用传递、容量预留与 unordered_map，全模型耗时进一步减半（较基准加速 2.36x ~ 3.78x），常驻内存减少 150MB~367MB，已验证提交（Commit: 47b1e06）。
-- [x] Round 4: 遗传算法 (GA) 适应度缓存与种群演化优化，引入代际缓存、哈希查重、操作码枚举、栈数组合法性检查，GA 耗时缩短至 1.47s (较基线加速 5.56x)。
+- [x] Round 4: 遗传算法 (GA) 适应度缓存与种群演化优化，引入代际缓存、哈希查重、操作码枚举、栈数组合法性检查，GA 耗时缩短至 1.47s (较基线加速 5.56x)，已验证提交（Commit: 4320d10）。
+- [x] Round 5: 指令窥孔合并、内层循环冗余调整消除与阵列切分优化，全模型内存骤降 35%~45% (ResNet18 降至 1022MB，AlexNet 降至 636MB)，全模型编译时间缩短至 1~2 秒。
 
-## 二、后续优化方向规划
+## 二、后续优化方向规划 (长任务持续推进)
 
-### Round 5: 指令生成与调度流水冗余指令优化 (Peephole / Redundant Load & Sync Elimination)
-- **方向**：在指令合并与优化阶段 (`backend/InstructionOptimization.cpp` 与 `backend/BatchPipelineSchedule.cpp` / `ElementPipelineSchedule.cpp`)，深入分析相邻计算核心间的数据传输，识别并消除相邻周期间冗余的数据 Reload 与多余同步指令。
-- **目标**：缩减生成的总指令数（尤其是 COMM 和 MEM 指令），直接缩短硬件仿真延迟 (Practical Latency)。
+### Round 6: OpenMP 多核多线程并行化加速 (GA Population Evaluation & Multi-core Exploration)
+- **方向**：在 CMakeLists.txt 中启用 `find_package(OpenMP REQUIRED)` 并加入 `-fopenmp`；在 `GeneticAlgorithm::Select()` 中对种群中未评估个体的适应度计算实行 `#pragma omp parallel for schedule(dynamic)` 多核并行化计算。
+- **目标**：充分压榨现代多核 CPU（当前 WSL 分配的多核心）算力，将遗传算法种群评估时间压缩至亚秒级别。
 
-### Round 6: OpenMP 多核多线程并行化加速 (GA Population & Hierarchy Mapping)
-- **方向**：在 GA 种群适应度评估循环及独立 Array Group 拓扑切分计算中引入 OpenMP 多核多线程并行化 (`#pragma omp parallel for`)。
-- **目标**：充分利用现代多核 CPU，将空间探索速度提升数倍。
+### Round 7: 统一反代与最终累积全量回归评估 (Final Benchmark & Technical Report)
+- **方向**：全模型端到端累积性能对比分析、验证集全覆盖测试、编写全面总结技术报告 `FINAL_OPTIMIZATION_REPORT.md`。
