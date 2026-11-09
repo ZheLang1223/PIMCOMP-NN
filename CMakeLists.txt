@@ -10,6 +10,11 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -DNDEBUG")
 
 project(PIMCOMP-NN)
 
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+endif()
+
 #find_package(ZLIB REQUIRED)
 
 file(GLOB_RECURSE SRC "${CMAKE_CURRENT_SOURCE_DIR}/main.cpp")
@@ -30,3 +35,6 @@ add_executable(${PROJECT_NAME}  ${SRC})
 add_dependencies(${PROJECT_NAME} zlibstatic)
 #target_link_libraries(${PROJECT_NAME} PRIVATE ZLIB::ZLIB)
 target_link_libraries(${PROJECT_NAME} zlibstatic)
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(${PROJECT_NAME} OpenMP::OpenMP_CXX)
+endif()

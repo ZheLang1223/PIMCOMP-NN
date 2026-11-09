@@ -27,6 +27,36 @@ struct SimpleInst
     int element_num = 0;
 };
 
+struct GAEvalContext {
+    bool initialized = false;
+    std::vector<std::vector<uint32_t>> COMM_cycle_flag;
+    std::vector<std::vector<uint32_t>> MEM_cycle_flag;
+    uint32_t current_comm_eval_id = 1;
+    uint32_t current_mem_eval_id = 1;
+    std::vector<int> fitness_scratch;
+    std::vector<std::vector<std::vector<struct SimpleInst>>> SimpleInstructionList;
+    std::vector<std::vector<std::vector<struct SimpleInst>>> SimpleCOMMInstructionList;
+    std::vector<std::vector<std::vector<struct SimpleInst>>> SimpleWBInstructionList;
+    int visited_single[MAX_CORE] = {0};
+    double LATENCY_single[MAX_CORE] = {0};
+    double LATENCY_first[MAX_CORE] = {0};
+    std::unordered_map<int, int> comm_index_2_index_in_core;
+    std::unordered_map<int, int> comm_index_2_core_index;
+    long long last_MVMUL_exec_start_time[MAX_CORE] = {0};
+    int MVMUL_instruction_group_core[MAX_CORE] = {0};
+    long long last_synchronous_time[MAX_CORE] = {0};
+    long long preparation_timeline[MAX_CORE] = {0};
+
+    void EnsureInit(int chromosome_size) {
+        if (!initialized) {
+            COMM_cycle_flag.resize(MAX_CHIP);
+            MEM_cycle_flag.resize(MAX_CHIP);
+            fitness_scratch.resize(chromosome_size);
+            initialized = true;
+        }
+    }
+};
+
 class GeneticAlgorithm
 {
 public:
@@ -67,8 +97,7 @@ private:
     std::vector<std::vector<int>> core_AG_type_num;
     std::vector<std::vector<int>> core_crossbar_num;
     std::vector<double> current_fitness;
-    std::vector<int> fitness_scratch;
-    std::unordered_map<uint64_t, double> fitness_cache;
+
     // Init
     void Init();
     void InitReplicating(float margin_factor, int individual_index);
@@ -77,17 +106,14 @@ private:
     void InitMappingDistributed(int individual_index);
     // Select
     void Select();
-    double Fitness(const std::vector<int>& individual, const std::vector<int>& replication_num_vector);
-    double FastEvaluationForBatch(const std::vector<int>& individual, const std::vector<int>& replication_num_vector);
-    double FastEvaluationForElement(const std::vector<int>& individual, const std::vector<int>& replication_num_vector);
+    double Fitness(GAEvalContext& ctx, const std::vector<int>& individual, const std::vector<int>& replication_num_vector);
+    double FastEvaluationForBatch(GAEvalContext& ctx, const std::vector<int>& individual, const std::vector<int>& replication_num_vector);
+    double FastEvaluationForElement(GAEvalContext& ctx, const std::vector<int>& individual, const std::vector<int>& replication_num_vector);
     double FastEvaluationInstructionGroupNum(const std::vector<int>& replication_num_vector);
-    void FastSingleInstructionGroupEvaluation(int instruction_group_index, int core_index, int index_in_core);
-    int CheckBusBandwidth(int chip_index, long long current_time, int communication_needed_cycle);
-    int CheckGlobalMemoryBandwidth(int chip_index, long long current_time, int global_memory_needed_cycle);
-    std::vector<std::vector<uint32_t>> COMM_cycle_flag;
-    std::vector<std::vector<uint32_t>> MEM_cycle_flag;
-    uint32_t current_comm_eval_id = 1;
-    uint32_t current_mem_eval_id = 1;
+    void FastSingleInstructionGroupEvaluation(GAEvalContext& ctx, int instruction_group_index, int core_index, int index_in_core);
+    int CheckBusBandwidth(GAEvalContext& ctx, int chip_index, long long current_time, int communication_needed_cycle);
+    int CheckGlobalMemoryBandwidth(GAEvalContext& ctx, int chip_index, long long current_time, int global_memory_needed_cycle);
+
     // Mutation
     void Mutation();
     bool CheckLegality(const std::vector<int> & individual, const std::vector<int> & replication_num_vector, const std::vector<int> & AG_type_num_vector, const std::vector<int> & crossbar_num_vector, const std::string& Stage);

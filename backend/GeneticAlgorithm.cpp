@@ -50,15 +50,6 @@ GeneticAlgorithm::GeneticAlgorithm(std::string model_name_, std::string pipeline
     core_AG_type_num.resize(population_num);
     core_crossbar_num.resize(population_num);
     current_fitness.resize(population_num, -1.0);
-    fitness_scratch.resize(chromosome_size);
-
-    COMM_cycle_flag.resize(MAX_CHIP);
-    MEM_cycle_flag.resize(MAX_CHIP);
-    for (int i = 0; i < MAX_CHIP; ++i)
-    {
-        COMM_cycle_flag[i].resize(1000000, 0);
-        MEM_cycle_flag[i].resize(1000000, 0);
-    }
 
     SaveIntermediateInfo();
 }
@@ -316,19 +307,22 @@ void GeneticAlgorithm::InitMappingClustered(int individual_index)
 void GeneticAlgorithm::Select()
 {
     int current_pop = current_chromosome.size();
+
+#pragma omp parallel for schedule(dynamic)
+    for (int i = 0; i < current_pop; ++i)
+    {
+        if (current_fitness[i] < 0.0)
+        {
+            static thread_local GAEvalContext tl_ctx;
+            tl_ctx.EnsureInit(chromosome_size);
+            current_fitness[i] = Fitness(tl_ctx, current_chromosome[i], node_replication_num[i]);
+        }
+    }
+
     std::vector<std::pair<double, int>> ranked(current_pop);
     for (int i = 0; i < current_pop; ++i)
     {
-        double fitness = (i < (int)current_fitness.size()) ? current_fitness[i] : -1.0;
-        if (fitness < 0.0)
-        {
-            fitness = Fitness(current_chromosome[i], node_replication_num[i]);
-            if (i < (int)current_fitness.size())
-                current_fitness[i] = fitness;
-            else
-                current_fitness.push_back(fitness);
-        }
-        ranked[i] = { fitness, i };
+        ranked[i] = { current_fitness[i], i };
     }
 
     std::sort(ranked.begin(), ranked.end(), [](const std::pair<double, int>& a, const std::pair<double, int>& b) {
@@ -381,89 +375,50 @@ void GeneticAlgorithm::Select()
     current_fitness = std::move(new_fitness);
 }
 
-static inline uint64_t HashIndividual(const std::vector<int>& chrom, const std::vector<int>& rep)
+double GeneticAlgorithm::Fitness(GAEvalContext& ctx, const std::vector<int>& individual, const std::vector<int>& replication_num_vector)
 {
-    uint64_t h = 14695981039346656037ULL;
-    for (int v : chrom)
-    {
-        h ^= (uint64_t)v;
-        h *= 1099511628211ULL;
-    }
-    for (int v : rep)
-    {
-        h ^= (uint64_t)v;
-        h *= 1099511628211ULL;
-    }
-    return h;
-}
-
-double GeneticAlgorithm::Fitness(const std::vector<int>& individual, const std::vector<int>& replication_num_vector)
-{
-    uint64_t h = HashIndividual(individual, replication_num_vector);
-    auto it = fitness_cache.find(h);
-    if (it != fitness_cache.end())
-        return it->second;
-
-    double res = 0.0;
     if (pipeline_granularity == "batch")
     {
-        res = FastEvaluationForBatch(individual, replication_num_vector);
+        return FastEvaluationForBatch(ctx, individual, replication_num_vector);
     }
     else
     {
-        res = FastEvaluationForElement(individual, replication_num_vector);
+        return FastEvaluationForElement(ctx, individual, replication_num_vector);
     }
-    fitness_cache[h] = res;
-    return res;
 }
 
-static std::vector<std::vector<std::vector<struct SimpleInst>>> SimpleInstructionList;
-static std::vector<std::vector<std::vector<struct SimpleInst>>> SimpleCOMMInstructionList;
-static std::vector<std::vector<std::vector<struct SimpleInst>>> SimpleWBInstructionList;
-static int visited_single[MAX_CORE] = {0};
-static double LATENCY_single[MAX_CORE] = {0};
-static double LATENCY_first[MAX_CORE] = {0};
-static std::unordered_map<int, int> comm_index_2_index_in_core;
-static std::unordered_map<int, int> comm_index_2_core_index;
-static long long last_MVMUL_exec_start_time[MAX_CORE] = {0};
-static int MVMUL_instruction_group_core[MAX_CORE] = {0};
-static long long last_synchronous_time[MAX_CORE] = {0};
-static long long preparation_timeline[MAX_CORE] = {0};
-
-double GeneticAlgorithm::FastEvaluationForBatch(const std::vector<int>& individual, const std::vector<int>& replication_num_vector)
+double GeneticAlgorithm::FastEvaluationForBatch(GAEvalContext& ctx, const std::vector<int>& individual, const std::vector<int>& replication_num_vector)
 {
-    if (fitness_scratch.size() != individual.size())
-        fitness_scratch.resize(individual.size());
-    std::copy(individual.begin(), individual.end(), fitness_scratch.begin());
-    std::vector<int>& fitness_individual = fitness_scratch;
+    if (ctx.fitness_scratch.size() != individual.size())
+        ctx.fitness_scratch.resize(individual.size());
+    std::copy(individual.begin(), individual.end(), ctx.fitness_scratch.begin());
+    std::vector<int>& fitness_individual = ctx.fitness_scratch;
 
     int appointed_instruction_group_num = 2;
-    if (SimpleInstructionList.size() < appointed_instruction_group_num)
+    if (ctx.SimpleInstructionList.size() < appointed_instruction_group_num)
     {
-        SimpleInstructionList.resize(appointed_instruction_group_num);
-        SimpleWBInstructionList.resize(appointed_instruction_group_num);
+        ctx.SimpleInstructionList.resize(appointed_instruction_group_num);
+        ctx.SimpleWBInstructionList.resize(appointed_instruction_group_num);
     }
     for (int ig = 0; ig < appointed_instruction_group_num; ++ig)
     {
-        if (SimpleInstructionList[ig].size() < ChipH * ChipW)
+        if (ctx.SimpleInstructionList[ig].size() < ChipH * ChipW)
         {
-            SimpleInstructionList[ig].resize(ChipH * ChipW);
-            SimpleWBInstructionList[ig].resize(ChipH * ChipW);
+            ctx.SimpleInstructionList[ig].resize(ChipH * ChipW);
+            ctx.SimpleWBInstructionList[ig].resize(ChipH * ChipW);
         }
         for (int i = 0; i < ChipH * ChipW; ++i)
         {
-            SimpleInstructionList[ig][i].clear();
-            SimpleWBInstructionList[ig][i].clear();
+            ctx.SimpleInstructionList[ig][i].clear();
+            ctx.SimpleWBInstructionList[ig][i].clear();
         }
     }
 
     int comm_index = 0;
-    std::vector<int> core_IG_num;
-    core_IG_num.resize(ChipH * ChipW);
+    std::vector<int> core_IG_num(ChipH * ChipW);
     for (int ig = 0; ig < appointed_instruction_group_num; ++ig)
     {
-        std::vector<int> node_AG_appearance_num;
-        node_AG_appearance_num.resize(node_num);
+        std::vector<int> node_AG_appearance_num(node_num, 0);
         int max_IG_num = 0;
         int tmp_AG_index_in_total = 0;
         for (int i = 0; i < ChipH * ChipW; ++i)
@@ -501,7 +456,7 @@ double GeneticAlgorithm::FastEvaluationForBatch(const std::vector<int>& individu
                         struct SimpleInst Instruction_ld;
                         Instruction_ld.op = SIMPLE_OP_LD;
                         Instruction_ld.element_num = input_element_num;
-                        SimpleInstructionList[ig][i].push_back(Instruction_ld);
+                        ctx.SimpleInstructionList[ig][i].push_back(Instruction_ld);
                     }
                     else
                     {
@@ -512,21 +467,21 @@ double GeneticAlgorithm::FastEvaluationForBatch(const std::vector<int>& individu
                         struct SimpleInst Instruction_ld;
                         Instruction_ld.op = SIMPLE_OP_LD;
                         Instruction_ld.element_num = input_element_num * new_load_rate;
-                        SimpleInstructionList[ig][i].push_back(Instruction_ld);
+                        ctx.SimpleInstructionList[ig][i].push_back(Instruction_ld);
                     }
 
                     struct SimpleInst Instruction_mvmul;
                     Instruction_mvmul.op = SIMPLE_OP_MVMUL;
                     Instruction_mvmul.node_index = node_index;
                     Instruction_mvmul.AG_index = tmp_AG_index_in_total;
-                    SimpleInstructionList[ig][i].push_back(Instruction_mvmul);
+                    ctx.SimpleInstructionList[ig][i].push_back(Instruction_mvmul);
 
                     if (AG_index_in_replication == 0)
                     {
                         struct SimpleInst Instruction_st;
                         Instruction_st.op = SIMPLE_OP_ST;
                         Instruction_st.element_num = output_element_num;
-                        SimpleWBInstructionList[ig][i].push_back(Instruction_st);
+                        ctx.SimpleWBInstructionList[ig][i].push_back(Instruction_st);
                     }
 
                     tmp_AG_index_in_total++;
@@ -537,97 +492,96 @@ double GeneticAlgorithm::FastEvaluationForBatch(const std::vector<int>& individu
         }
         for (int i = 0; i < ChipH * ChipW; ++i)
         {
-            for (size_t j = 0; j < SimpleWBInstructionList[ig][i].size(); ++j)
+            for (size_t j = 0; j < ctx.SimpleWBInstructionList[ig][i].size(); ++j)
             {
-                SimpleInstructionList[ig][i].push_back(SimpleWBInstructionList[ig][i][j]);
+                ctx.SimpleInstructionList[ig][i].push_back(ctx.SimpleWBInstructionList[ig][i][j]);
             }
         }
     }
 
-    current_comm_eval_id++;
-    current_mem_eval_id++;
-    if (__builtin_expect(current_comm_eval_id == 0 || current_mem_eval_id == 0, 0))
+    ctx.current_comm_eval_id++;
+    ctx.current_mem_eval_id++;
+    if (__builtin_expect(ctx.current_comm_eval_id == 0 || ctx.current_mem_eval_id == 0, 0))
     {
         for (int i = 0; i < MAX_CHIP; ++i)
         {
-            std::fill(COMM_cycle_flag[i].begin(), COMM_cycle_flag[i].end(), 0);
-            std::fill(MEM_cycle_flag[i].begin(), MEM_cycle_flag[i].end(), 0);
+            std::fill(ctx.COMM_cycle_flag[i].begin(), ctx.COMM_cycle_flag[i].end(), 0);
+            std::fill(ctx.MEM_cycle_flag[i].begin(), ctx.MEM_cycle_flag[i].end(), 0);
         }
-        current_comm_eval_id = 1;
-        current_mem_eval_id = 1;
+        ctx.current_comm_eval_id = 1;
+        ctx.current_mem_eval_id = 1;
     }
 
     for (int ig = 0; ig < appointed_instruction_group_num; ++ig)
     {
-        FastSingleInstructionGroupEvaluation(ig, 0, 0);
+        FastSingleInstructionGroupEvaluation(ctx, ig, 0, 0);
         if (ig == 0)
             for (int c = 0; c < MAX_CORE; ++c)
-                LATENCY_first[c] = LATENCY_single[c];
-        for (int & n : visited_single) {n = 0;}
-        for (int & n : MVMUL_instruction_group_core) {n = 0;}
+                ctx.LATENCY_first[c] = ctx.LATENCY_single[c];
+        for (int & n : ctx.visited_single) {n = 0;}
+        for (int & n : ctx.MVMUL_instruction_group_core) {n = 0;}
     }
 
     double max_latency = 0;
     double sum_latency = 0;
     for (int i = 0; i < ChipH * ChipW; ++i)
     {
-        if (max_latency < (LATENCY_single[i] - LATENCY_first[i]) / (appointed_instruction_group_num-1) * (core_IG_num[i]-1) + LATENCY_first[i])
-            max_latency = (LATENCY_single[i] - LATENCY_first[i]) / (appointed_instruction_group_num-1) * (core_IG_num[i]-1) + LATENCY_first[i];
-        sum_latency += (LATENCY_single[i] - LATENCY_first[i]) / (appointed_instruction_group_num-1) * (core_IG_num[i]-1) + LATENCY_first[i];
+        if (max_latency < (ctx.LATENCY_single[i] - ctx.LATENCY_first[i]) / (appointed_instruction_group_num-1) * (core_IG_num[i]-1) + ctx.LATENCY_first[i])
+            max_latency = (ctx.LATENCY_single[i] - ctx.LATENCY_first[i]) / (appointed_instruction_group_num-1) * (core_IG_num[i]-1) + ctx.LATENCY_first[i];
+        sum_latency += (ctx.LATENCY_single[i] - ctx.LATENCY_first[i]) / (appointed_instruction_group_num-1) * (core_IG_num[i]-1) + ctx.LATENCY_first[i];
     }
 
     for (int ig = 0; ig < appointed_instruction_group_num; ++ig)
     {
         for (int i = 0; i < ChipH * ChipW; ++i)
         {
-            SimpleInstructionList[ig][i].clear();
-            SimpleWBInstructionList[ig][i].clear();
+            ctx.SimpleInstructionList[ig][i].clear();
+            ctx.SimpleWBInstructionList[ig][i].clear();
         }
     }
-    comm_index_2_index_in_core.clear();
-    comm_index_2_core_index.clear();
-    for (auto &v : visited_single) {v = 0;}
-    for (auto &v : LATENCY_single) {v = 0;}
-    for (auto &v : LATENCY_first) {v = 0;}
-    for (auto &v : last_MVMUL_exec_start_time) {v = 0;}
-    for (auto &v : MVMUL_instruction_group_core) {v = 0;}
-    for (auto &v : last_synchronous_time) {v = 0;}
-    for (auto &v : preparation_timeline) {v = 0;}
+    ctx.comm_index_2_index_in_core.clear();
+    ctx.comm_index_2_core_index.clear();
+    for (auto &v : ctx.visited_single) {v = 0;}
+    for (auto &v : ctx.LATENCY_single) {v = 0;}
+    for (auto &v : ctx.LATENCY_first) {v = 0;}
+    for (auto &v : ctx.last_MVMUL_exec_start_time) {v = 0;}
+    for (auto &v : ctx.MVMUL_instruction_group_core) {v = 0;}
+    for (auto &v : ctx.last_synchronous_time) {v = 0;}
+    for (auto &v : ctx.preparation_timeline) {v = 0;}
     return max_latency;
 }
 
-double GeneticAlgorithm::FastEvaluationForElement(const std::vector<int>& individual, const std::vector<int>& replication_num_vector)
+double GeneticAlgorithm::FastEvaluationForElement(GAEvalContext& ctx, const std::vector<int>& individual, const std::vector<int>& replication_num_vector)
 {
-    if (fitness_scratch.size() != individual.size())
-        fitness_scratch.resize(individual.size());
-    std::copy(individual.begin(), individual.end(), fitness_scratch.begin());
-    std::vector<int>& fitness_individual = fitness_scratch;
+    if (ctx.fitness_scratch.size() != individual.size())
+        ctx.fitness_scratch.resize(individual.size());
+    std::copy(individual.begin(), individual.end(), ctx.fitness_scratch.begin());
+    std::vector<int>& fitness_individual = ctx.fitness_scratch;
 
     int appointed_instruction_group_num = 1;
-    if (SimpleInstructionList.size() < appointed_instruction_group_num)
+    if (ctx.SimpleInstructionList.size() < appointed_instruction_group_num)
     {
-        SimpleInstructionList.resize(appointed_instruction_group_num);
-        SimpleCOMMInstructionList.resize(appointed_instruction_group_num);
+        ctx.SimpleInstructionList.resize(appointed_instruction_group_num);
+        ctx.SimpleCOMMInstructionList.resize(appointed_instruction_group_num);
     }
     for (int ig = 0; ig < appointed_instruction_group_num; ++ig)
     {
-        if (SimpleInstructionList[ig].size() < ChipH * ChipW)
+        if (ctx.SimpleInstructionList[ig].size() < ChipH * ChipW)
         {
-            SimpleInstructionList[ig].resize(ChipH * ChipW);
-            SimpleCOMMInstructionList[ig].resize(ChipH * ChipW);
+            ctx.SimpleInstructionList[ig].resize(ChipH * ChipW);
+            ctx.SimpleCOMMInstructionList[ig].resize(ChipH * ChipW);
         }
         for (int i = 0; i < ChipH * ChipW; ++i)
         {
-            SimpleInstructionList[ig][i].clear();
-            SimpleCOMMInstructionList[ig][i].clear();
+            ctx.SimpleInstructionList[ig][i].clear();
+            ctx.SimpleCOMMInstructionList[ig][i].clear();
         }
     }
 
     std::set<std::string> no_consider_node_set = {"OP_INPUT", "OP_FLATTEN", "OP_RESHAPE", "OP_DROPOUT", "OP_LRN",
                                                   "OP_SOFTMAX", "OP_TRANSPOSE", "OP_SQUEEZE", "OP_MATMUL", "OP_BN",
                                                   "OP_CLIP", "OP_SQUEEZE", "OP_MATMUL"};
-    std::vector<int> post_node_map;
-    post_node_map.resize(node_num);
+    std::vector<int> post_node_map(node_num, 0);
     for (int i = 0; i < node_num; ++i)
     {
         std::string operation = PIMCOMP_node_list[i].operation;
@@ -642,8 +596,7 @@ double GeneticAlgorithm::FastEvaluationForElement(const std::vector<int>& indivi
     {
         int max_IG_num = 0;
         int tmp_AG_index_in_total = 0;
-        std::vector<int> node_AG_appearance_num;
-        node_AG_appearance_num.resize(node_num);
+        std::vector<int> node_AG_appearance_num(node_num, 0);
         for (int i = 0; i < ChipH * ChipW; ++i)
         {
             int start_address = i * max_AG_kind_per_core;
@@ -677,7 +630,7 @@ double GeneticAlgorithm::FastEvaluationForElement(const std::vector<int>& indivi
                     Instruction_mvmul.op = SIMPLE_OP_MVMUL;
                     Instruction_mvmul.node_index = node_index;
                     Instruction_mvmul.AG_index = tmp_AG_index_in_total;
-                    SimpleInstructionList[ig][i].push_back(Instruction_mvmul);
+                    ctx.SimpleInstructionList[ig][i].push_back(Instruction_mvmul);
 
                     if (AG_index_in_replication == 0)
                     {
@@ -709,14 +662,14 @@ double GeneticAlgorithm::FastEvaluationForElement(const std::vector<int>& indivi
                                 Instruction_send.to_core = to_core;
                                 Instruction_send.element_num = output_element_num;
                                 Instruction_send.comm_index = comm_index;
-                                SimpleCOMMInstructionList[ig][i].push_back(Instruction_send);
+                                ctx.SimpleCOMMInstructionList[ig][i].push_back(Instruction_send);
 
                                 struct SimpleInst Instruction_recv;
                                 Instruction_recv.op = SIMPLE_OP_RECV;
                                 Instruction_recv.from_core = i;
                                 Instruction_recv.element_num = output_element_num;
                                 Instruction_recv.comm_index = comm_index;
-                                SimpleCOMMInstructionList[ig][Instruction_send.to_core].push_back(Instruction_recv);
+                                ctx.SimpleCOMMInstructionList[ig][Instruction_send.to_core].push_back(Instruction_recv);
 
                                 comm_index++;
                             }
@@ -730,57 +683,57 @@ double GeneticAlgorithm::FastEvaluationForElement(const std::vector<int>& indivi
         }
         for (int i = 0; i < ChipH * ChipW; ++i)
         {
-            for (size_t j = 0; j < SimpleCOMMInstructionList[ig][i].size(); ++j)
+            for (size_t j = 0; j < ctx.SimpleCOMMInstructionList[ig][i].size(); ++j)
             {
-                SimpleCOMMInstructionList[ig][i][j].instruction_index_in_core = SimpleInstructionList[ig][i].size();
-                SimpleInstructionList[ig][i].push_back(SimpleCOMMInstructionList[ig][i][j]);
+                ctx.SimpleCOMMInstructionList[ig][i][j].instruction_index_in_core = ctx.SimpleInstructionList[ig][i].size();
+                ctx.SimpleInstructionList[ig][i].push_back(ctx.SimpleCOMMInstructionList[ig][i][j]);
             }
         }
     }
 
-    current_comm_eval_id++;
-    current_mem_eval_id++;
-    if (__builtin_expect(current_comm_eval_id == 0 || current_mem_eval_id == 0, 0))
+    ctx.current_comm_eval_id++;
+    ctx.current_mem_eval_id++;
+    if (__builtin_expect(ctx.current_comm_eval_id == 0 || ctx.current_mem_eval_id == 0, 0))
     {
         for (int i = 0; i < MAX_CHIP; ++i)
         {
-            std::fill(COMM_cycle_flag[i].begin(), COMM_cycle_flag[i].end(), 0);
-            std::fill(MEM_cycle_flag[i].begin(), MEM_cycle_flag[i].end(), 0);
+            std::fill(ctx.COMM_cycle_flag[i].begin(), ctx.COMM_cycle_flag[i].end(), 0);
+            std::fill(ctx.MEM_cycle_flag[i].begin(), ctx.MEM_cycle_flag[i].end(), 0);
         }
-        current_comm_eval_id = 1;
-        current_mem_eval_id = 1;
+        ctx.current_comm_eval_id = 1;
+        ctx.current_mem_eval_id = 1;
     }
 
     for (int ig = 0; ig < appointed_instruction_group_num; ++ig)
     {
-        FastSingleInstructionGroupEvaluation(ig, 0, 0);
-        for (int & n : visited_single) {n = 0;}
+        FastSingleInstructionGroupEvaluation(ctx, ig, 0, 0);
+        for (int & n : ctx.visited_single) {n = 0;}
     }
 
     double practical_time = 0.0;
     for (int i = 0; i < ChipH * ChipW; ++i)
     {
-        if (practical_time < LATENCY_single[i])
-            practical_time = LATENCY_single[i];
+        if (practical_time < ctx.LATENCY_single[i])
+            practical_time = ctx.LATENCY_single[i];
     }
 
     for (int ig = 0; ig < appointed_instruction_group_num; ++ig)
     {
         for (int i = 0; i < ChipH * ChipW; ++i)
         {
-            SimpleInstructionList[ig][i].clear();
-            SimpleCOMMInstructionList[ig][i].clear();
+            ctx.SimpleInstructionList[ig][i].clear();
+            ctx.SimpleCOMMInstructionList[ig][i].clear();
         }
     }
-    comm_index_2_index_in_core.clear();
-    comm_index_2_core_index.clear();
-    for (auto &v : visited_single) {v = 0;}
-    for (auto &v : LATENCY_single) {v = 0;}
-    for (auto &v : LATENCY_first) {v = 0;}
-    for (auto &v : last_MVMUL_exec_start_time) {v = 0;}
-    for (auto &v : MVMUL_instruction_group_core) {v = 0;}
-    for (auto &v : last_synchronous_time) {v = 0;}
-    for (auto &v : preparation_timeline) {v = 0;}
+    ctx.comm_index_2_index_in_core.clear();
+    ctx.comm_index_2_core_index.clear();
+    for (auto &v : ctx.visited_single) {v = 0;}
+    for (auto &v : ctx.LATENCY_single) {v = 0;}
+    for (auto &v : ctx.LATENCY_first) {v = 0;}
+    for (auto &v : ctx.last_MVMUL_exec_start_time) {v = 0;}
+    for (auto &v : ctx.MVMUL_instruction_group_core) {v = 0;}
+    for (auto &v : ctx.last_synchronous_time) {v = 0;}
+    for (auto &v : ctx.preparation_timeline) {v = 0;}
 
     return FastEvaluationInstructionGroupNum(replication_num_vector) * practical_time / appointed_instruction_group_num;
 //    return practical_time / appointed_instruction_group_num;
@@ -861,34 +814,34 @@ double GeneticAlgorithm::FastEvaluationForElement(const std::vector<int>& indivi
 }
 
 
-void GeneticAlgorithm::FastSingleInstructionGroupEvaluation(int instruction_group_index, int core_index, int index_in_core)
+void GeneticAlgorithm::FastSingleInstructionGroupEvaluation(GAEvalContext& ctx, int instruction_group_index, int core_index, int index_in_core)
 {
     if (core_index >= ChipW * ChipH)
         return;
-    visited_single[core_index] = 1;
-    int instruction_ir_num = SimpleInstructionList[instruction_group_index][core_index].size();
+    ctx.visited_single[core_index] = 1;
+    int instruction_ir_num = ctx.SimpleInstructionList[instruction_group_index][core_index].size();
     for (int k = index_in_core; k < instruction_ir_num; ++k)
     {
-        const struct SimpleInst& tmpInstruction = SimpleInstructionList[instruction_group_index][core_index][k];
+        const struct SimpleInst& tmpInstruction = ctx.SimpleInstructionList[instruction_group_index][core_index][k];
         if (tmpInstruction.op == SIMPLE_OP_SEND || tmpInstruction.op == SIMPLE_OP_RECV)
         {
             int comm_index = tmpInstruction.comm_index;
             int instruction_index_in_core = tmpInstruction.instruction_index_in_core;
-            if (comm_index_2_index_in_core.count(comm_index) == 0)
+            if (ctx.comm_index_2_index_in_core.count(comm_index) == 0)
             {
-                comm_index_2_index_in_core.insert(std::pair<int,int>(comm_index, instruction_index_in_core));
-                comm_index_2_core_index.insert(std::pair<int,int>(comm_index, core_index));
+                ctx.comm_index_2_index_in_core.insert(std::pair<int,int>(comm_index, instruction_index_in_core));
+                ctx.comm_index_2_core_index.insert(std::pair<int,int>(comm_index, core_index));
                 int next_core_index = core_index+1;
-                while (visited_single[next_core_index] != 0)
+                while (ctx.visited_single[next_core_index] != 0)
                 {
                     next_core_index++;
                 }
-                FastSingleInstructionGroupEvaluation(instruction_group_index, next_core_index, 0);
+                FastSingleInstructionGroupEvaluation(ctx, instruction_group_index, next_core_index, 0);
             }
             else
             {
-                int corresponding_core_index = comm_index_2_core_index[comm_index];
-                int corresponding_instruction_index_in_core = comm_index_2_index_in_core[comm_index];
+                int corresponding_core_index = ctx.comm_index_2_core_index[comm_index];
+                int corresponding_instruction_index_in_core = ctx.comm_index_2_index_in_core[comm_index];
 
                 int element_num = tmpInstruction.element_num;
                 int communication_bytes_num = element_num * ArithmeticPrecision / 8;
@@ -896,46 +849,46 @@ void GeneticAlgorithm::FastSingleInstructionGroupEvaluation(int instruction_grou
                 int real_comm_latency = 0;
 
                 // fully synchronized mechanism
-                real_comm_latency = CheckBusBandwidth(0, LATENCY_single[corresponding_core_index], communication_needed_cycle);
-                if (LATENCY_single[core_index] > LATENCY_single[corresponding_core_index])
+                real_comm_latency = CheckBusBandwidth(ctx, 0, ctx.LATENCY_single[corresponding_core_index], communication_needed_cycle);
+                if (ctx.LATENCY_single[core_index] > ctx.LATENCY_single[corresponding_core_index])
                 {
-                    LATENCY_single[corresponding_core_index] = LATENCY_single[core_index];
+                    ctx.LATENCY_single[corresponding_core_index] = ctx.LATENCY_single[core_index];
                 }
                 else
                 {
-                    LATENCY_single[core_index] = LATENCY_single[corresponding_core_index];
+                    ctx.LATENCY_single[core_index] = ctx.LATENCY_single[corresponding_core_index];
                 }
-                last_synchronous_time[core_index] = LATENCY_single[core_index];
-                last_synchronous_time[corresponding_core_index] = LATENCY_single[corresponding_core_index];
-                LATENCY_single[corresponding_core_index] += real_comm_latency;
-                LATENCY_single[core_index] += real_comm_latency;
+                ctx.last_synchronous_time[core_index] = ctx.LATENCY_single[core_index];
+                ctx.last_synchronous_time[corresponding_core_index] = ctx.LATENCY_single[corresponding_core_index];
+                ctx.LATENCY_single[corresponding_core_index] += real_comm_latency;
+                ctx.LATENCY_single[core_index] += real_comm_latency;
 
-                FastSingleInstructionGroupEvaluation(instruction_group_index, corresponding_core_index, corresponding_instruction_index_in_core+1);
-                FastSingleInstructionGroupEvaluation(instruction_group_index, core_index, instruction_index_in_core+1);
+                FastSingleInstructionGroupEvaluation(ctx, instruction_group_index, corresponding_core_index, corresponding_instruction_index_in_core+1);
+                FastSingleInstructionGroupEvaluation(ctx, instruction_group_index, core_index, instruction_index_in_core+1);
             }
             return;
         }
         else if (tmpInstruction.op == SIMPLE_OP_MVMUL)
         {
-            if (MVMUL_instruction_group_core[core_index] != 0)
+            if (ctx.MVMUL_instruction_group_core[core_index] != 0)
             {
                 int real_interval = GA_MVMUL_start_interval;
-                last_MVMUL_exec_start_time[core_index] = last_MVMUL_exec_start_time[core_index] + real_interval;
-                if (last_MVMUL_exec_start_time[core_index] < last_synchronous_time[core_index])
+                ctx.last_MVMUL_exec_start_time[core_index] = ctx.last_MVMUL_exec_start_time[core_index] + real_interval;
+                if (ctx.last_MVMUL_exec_start_time[core_index] < ctx.last_synchronous_time[core_index])
                 {
-                    last_MVMUL_exec_start_time[core_index] = last_synchronous_time[core_index];
+                    ctx.last_MVMUL_exec_start_time[core_index] = ctx.last_synchronous_time[core_index];
                 }
-                LATENCY_single[core_index] = last_MVMUL_exec_start_time[core_index] + MVMUL_latency;
+                ctx.LATENCY_single[core_index] = ctx.last_MVMUL_exec_start_time[core_index] + MVMUL_latency;
             }
             else
             {
-                if (preparation_timeline[core_index] < LATENCY_single[core_index])
-                    last_MVMUL_exec_start_time[core_index] = LATENCY_single[core_index];
+                if (ctx.preparation_timeline[core_index] < ctx.LATENCY_single[core_index])
+                    ctx.last_MVMUL_exec_start_time[core_index] = ctx.LATENCY_single[core_index];
                 else
-                    last_MVMUL_exec_start_time[core_index] = preparation_timeline[core_index];
-                LATENCY_single[core_index] = last_MVMUL_exec_start_time[core_index] + MVMUL_latency;
+                    ctx.last_MVMUL_exec_start_time[core_index] = ctx.preparation_timeline[core_index];
+                ctx.LATENCY_single[core_index] = ctx.last_MVMUL_exec_start_time[core_index] + MVMUL_latency;
             }
-            MVMUL_instruction_group_core[core_index]++;
+            ctx.MVMUL_instruction_group_core[core_index]++;
         }
         else if (tmpInstruction.op == SIMPLE_OP_LD)
         {
@@ -943,8 +896,8 @@ void GeneticAlgorithm::FastSingleInstructionGroupEvaluation(int instruction_grou
             int memory_bytes_num = element_num * ArithmeticPrecision / 8;
             int memory_needed_cycle = std::ceil((double(memory_bytes_num)) / (GLOBAL_MEMORY_bandwidth / Frequency));
             int chip_index = core_index / (OneChipWidth * OneChipHeight);
-            int real_mem_latency = CheckGlobalMemoryBandwidth(chip_index, preparation_timeline[core_index], memory_needed_cycle);
-            preparation_timeline[core_index] = preparation_timeline[core_index] + real_mem_latency;
+            int real_mem_latency = CheckGlobalMemoryBandwidth(ctx, chip_index, ctx.preparation_timeline[core_index], memory_needed_cycle);
+            ctx.preparation_timeline[core_index] = ctx.preparation_timeline[core_index] + real_mem_latency;
         }
         else if (tmpInstruction.op == SIMPLE_OP_ST)
         {
@@ -952,32 +905,32 @@ void GeneticAlgorithm::FastSingleInstructionGroupEvaluation(int instruction_grou
             int memory_bytes_num = element_num * ArithmeticPrecision / 8;
             int memory_needed_cycle = std::ceil((double(memory_bytes_num)) / (GLOBAL_MEMORY_bandwidth / Frequency));
             int chip_index = core_index / (OneChipWidth * OneChipHeight);
-            int real_mem_latency = CheckGlobalMemoryBandwidth(chip_index, LATENCY_single[core_index], memory_needed_cycle);
-            LATENCY_single[core_index] += real_mem_latency;
+            int real_mem_latency = CheckGlobalMemoryBandwidth(ctx, chip_index, ctx.LATENCY_single[core_index], memory_needed_cycle);
+            ctx.LATENCY_single[core_index] += real_mem_latency;
         }
     }
     int next_core_index = core_index+1;
-    while (visited_single[next_core_index] != 0)
+    while (ctx.visited_single[next_core_index] != 0)
     {
         next_core_index++;
     }
-    FastSingleInstructionGroupEvaluation(instruction_group_index, next_core_index, 0);
+    FastSingleInstructionGroupEvaluation(ctx, instruction_group_index, next_core_index, 0);
 }
 
-int GeneticAlgorithm::CheckBusBandwidth(int chip_index, long long current_time, int communication_needed_cycle)
+int GeneticAlgorithm::CheckBusBandwidth(GAEvalContext& ctx, int chip_index, long long current_time, int communication_needed_cycle)
 {
     int needed_cycle = communication_needed_cycle;
     int forward_cycle = 0;
     while(needed_cycle > 0)
     {
         size_t idx = current_time + forward_cycle;
-        if (__builtin_expect(idx >= COMM_cycle_flag[chip_index].size(), 0))
+        if (__builtin_expect(idx >= ctx.COMM_cycle_flag[chip_index].size(), 0))
         {
-            COMM_cycle_flag[chip_index].resize(std::max(idx + 1048576, COMM_cycle_flag[chip_index].size() * 2), 0);
+            ctx.COMM_cycle_flag[chip_index].resize(std::max(idx + 65536, ctx.COMM_cycle_flag[chip_index].size() * 2 + 1024), 0);
         }
-        if (COMM_cycle_flag[chip_index][idx] != current_comm_eval_id)
+        if (ctx.COMM_cycle_flag[chip_index][idx] != ctx.current_comm_eval_id)
         {
-            COMM_cycle_flag[chip_index][idx] = current_comm_eval_id;
+            ctx.COMM_cycle_flag[chip_index][idx] = ctx.current_comm_eval_id;
             needed_cycle --;
         }
         forward_cycle++;
@@ -985,20 +938,20 @@ int GeneticAlgorithm::CheckBusBandwidth(int chip_index, long long current_time, 
     return forward_cycle;
 }
 
-int GeneticAlgorithm::CheckGlobalMemoryBandwidth(int chip_index, long long current_time, int global_memory_needed_cycle)
+int GeneticAlgorithm::CheckGlobalMemoryBandwidth(GAEvalContext& ctx, int chip_index, long long current_time, int global_memory_needed_cycle)
 {
     int needed_cycle = global_memory_needed_cycle;
     int forward_cycle = 0;
     while(needed_cycle > 0)
     {
         size_t idx = current_time + forward_cycle;
-        if (__builtin_expect(idx >= MEM_cycle_flag[chip_index].size(), 0))
+        if (__builtin_expect(idx >= ctx.MEM_cycle_flag[chip_index].size(), 0))
         {
-            MEM_cycle_flag[chip_index].resize(std::max(idx + 1048576, MEM_cycle_flag[chip_index].size() * 2), 0);
+            ctx.MEM_cycle_flag[chip_index].resize(std::max(idx + 65536, ctx.MEM_cycle_flag[chip_index].size() * 2 + 1024), 0);
         }
-        if (MEM_cycle_flag[chip_index][idx] != current_mem_eval_id)
+        if (ctx.MEM_cycle_flag[chip_index][idx] != ctx.current_mem_eval_id)
         {
-            MEM_cycle_flag[chip_index][idx] = current_mem_eval_id;
+            ctx.MEM_cycle_flag[chip_index][idx] = ctx.current_mem_eval_id;
             needed_cycle --;
         }
         forward_cycle++;
