@@ -3,6 +3,29 @@
 //
 
 #include "DataReload.h"
+#include <chrono>
+#include <cmath>
+#include <unordered_map>
+
+static inline int GetFastHash(int addr)
+{
+    static std::vector<int> hash_cache;
+    if (addr < 0) return 0;
+    if (__builtin_expect((size_t)addr >= hash_cache.size(), 0))
+    {
+        size_t old_size = hash_cache.size();
+        size_t new_size = std::max((size_t)addr + 65536, old_size * 2 + 1024);
+        hash_cache.resize(new_size, -1);
+    }
+    int h = hash_cache[addr];
+    if (__builtin_expect(h == -1, 0))
+    {
+        double d = (double)addr;
+        h = addr / 5 + (int)(std::sqrt(d) + std::cbrt(d) + std::pow(d, 1.0/5.0) + std::pow(d, 1.0/7.0));
+        hash_cache[addr] = h;
+    }
+    return h;
+}
 
 void DataReload::ReloadData()
 {
@@ -77,24 +100,23 @@ void DataReload::ReloadInput()
     for (int i = 0; i < instruction_group_num; ++i)
         PIMCOMP_6_base_instruction_with_input[i].core_list.resize(ChipH * ChipW);
 
-    // Set a record table for each instruction_group for each core to record the reusing of input data.
-    // 为每个核在每个instruction_group设置一个记录表，记录输入数据复用情况
-    // node_index (max 999) * 50000 + load_source_addr % 50000
     const int node_interval = 50000;
-    const int total_interval = 1000 * node_interval;
-    std::vector<int> node_input_reuse_record_for_element_num; // node_input_reuse_record[node_index][rs_offset] records the element_num of an LD instruction
-    std::vector<int> node_input_reuse_record_for_local_address; // node_input_reuse_record[node_index][rs_offset] records the dst_address of an LOAD instruction
-    node_input_reuse_record_for_element_num.resize(total_interval);
-    node_input_reuse_record_for_local_address.resize(total_interval);
+    struct ReuseRecord {
+        int element_num;
+        long long local_address;
+    };
+    std::unordered_map<int, ReuseRecord> node_load_map;
+    node_load_map.reserve(128);
 
     for (int j = 0; j < ChipH * ChipW; ++j)
     {
         for (int i = 0; i < instruction_group_num; ++i)
         {
-            std::set<int> node_load_info;
             if (PIMCOMP_5_base_instruction_with_address[i].core_list.size() == 0)
                 continue;
+            node_load_map.clear();
             int instruction_ir_num = PIMCOMP_5_base_instruction_with_address[i].core_list[j].instruction_ir_list.size();
+            PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.reserve(instruction_ir_num * 2);
             for (int k = 0; k < instruction_ir_num; ++k)
             {
                 struct INST tmpInstruction = PIMCOMP_5_base_instruction_with_address[i].core_list[j].instruction_ir_list[k];
@@ -130,21 +152,16 @@ void DataReload::ReloadInput()
                                 Instruction_lldi.element_num = end_position - start_position + 1;
                                 Instruction_lldi.imm_value = 0;
                                 Instruction_lldi.instruction_group_index = i;
-                                PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(Instruction_lldi);
+                                PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(std::move(Instruction_lldi));
                             }
                             else // load in dram
                             {
                                 int load_address_in_dram = real_channel_index_in_input_feature * input_channel_length + start_position % input_channel_length;
                                 int load_element_num = end_position - start_position + 1;
-//                                if (node_load_info.count(node_index * node_interval + load_address_in_dram % node_interval) == 0
-//                                    || node_input_reuse_record_for_element_num[node_index * node_interval + load_address_in_dram % node_interval] != load_element_num)
-                                int hash_value = load_address_in_dram / 5 +
-                                                 pow(double(load_address_in_dram), 1.0/2) +
-                                                 pow(double(load_address_in_dram), 1.0/3) +
-                                                 pow(double(load_address_in_dram), 1.0/5) +
-                                                 pow(double(load_address_in_dram), 1.0/7);
-                                if (node_load_info.count(node_index * node_interval + hash_value % node_interval) == 0
-                                    || node_input_reuse_record_for_element_num[node_index * node_interval + hash_value % node_interval] != load_element_num)
+                                int hash_value = GetFastHash(load_address_in_dram);
+                                int interval_index = hash_value % node_interval + node_index * node_interval;
+                                auto it = node_load_map.find(interval_index);
+                                if (it == node_load_map.end() || it->second.element_num != load_element_num)
                                 {
                                     struct INST Instruction_ld;
                                     Instruction_ld.type = MEM;
@@ -162,11 +179,8 @@ void DataReload::ReloadInput()
                                     Instruction_ld.destination_offset = tmpInstruction.source_offset;
                                     Instruction_ld.element_num = end_position - start_position + 1;
                                     Instruction_ld.instruction_group_index = i;
-                                    PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(Instruction_ld);
-                                    int interval_index = hash_value % node_interval + node_index * node_interval;
-                                    node_load_info.insert(interval_index);
-                                    node_input_reuse_record_for_element_num[interval_index] = Instruction_ld.element_num;
-                                    node_input_reuse_record_for_local_address[interval_index] = Instruction_ld.destination_address + Instruction_ld.destination_offset;
+                                    node_load_map[interval_index] = { Instruction_ld.element_num, Instruction_ld.destination_address + Instruction_ld.destination_offset };
+                                    PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(std::move(Instruction_ld));
                                 }
                                 else // Reuse
                                 {
@@ -176,14 +190,13 @@ void DataReload::ReloadInput()
                                     Instruction_vm.level_index = PIMCOMP_node_list[node_index].level_index;
                                     Instruction_vm.node_index = node_index;
                                     Instruction_vm.stage = "MAIN";
-//                                    Instruction_vm.source_address = node_input_reuse_record_for_local_address[node_index * node_interval + load_address_in_dram % node_interval];
-                                    Instruction_vm.source_address = node_input_reuse_record_for_local_address[node_index * node_interval + hash_value % node_interval];
+                                    Instruction_vm.source_address = it->second.local_address;
                                     Instruction_vm.source_offset = 0;
                                     Instruction_vm.destination_address = PIMCOMP_5_AG_memory_info[0].AG_memory_info_of_one_IG[j].AG_memory_info_of_one_core[AG_index].memory_start_address;
                                     Instruction_vm.destination_offset = tmpInstruction.source_offset;
                                     Instruction_vm.element_num = end_position - start_position + 1;
                                     Instruction_vm.instruction_group_index = i;
-                                    PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(Instruction_vm);
+                                    PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(std::move(Instruction_vm));
                                 }
                             }
                         }
@@ -224,21 +237,16 @@ void DataReload::ReloadInput()
                                     Instruction_lldi.element_num = element_num;
                                     Instruction_lldi.imm_value = 0;
                                     Instruction_lldi.instruction_group_index = i;
-                                    PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(Instruction_lldi);
+                                    PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(std::move(Instruction_lldi));
                                 }
                                 else // load from dram
                                 {
                                     int load_address_in_dram = real_channel_index_in_input_feature * input_channel_length + rs_offset_offset;
                                     int load_element_num = element_num;
-//                                    if (node_load_info.count(node_index * node_interval + load_address_in_dram % node_interval) == 0
-//                                        || node_input_reuse_record_for_element_num[node_index * node_interval + load_address_in_dram % node_interval] != load_element_num)
-                                    int hash_value = load_address_in_dram / 5 +
-                                            pow(double(load_address_in_dram), 1.0/2) +
-                                            pow(double(load_address_in_dram), 1.0/3) +
-                                            pow(double(load_address_in_dram), 1.0/5) +
-                                            pow(double(load_address_in_dram), 1.0/7);
-                                    if (node_load_info.count(node_index * node_interval + hash_value % node_interval) == 0
-                                        || node_input_reuse_record_for_element_num[node_index * node_interval + hash_value % node_interval] != load_element_num)
+                                    int hash_value = GetFastHash(load_address_in_dram);
+                                    int interval_index = hash_value % node_interval + node_index * node_interval;
+                                    auto it = node_load_map.find(interval_index);
+                                    if (it == node_load_map.end() || it->second.element_num != load_element_num)
                                     {
                                         struct INST Instruction_ld;
                                         Instruction_ld.type = MEM;
@@ -256,11 +264,8 @@ void DataReload::ReloadInput()
                                         Instruction_ld.destination_offset = rd_offset;
                                         Instruction_ld.element_num = element_num;
                                         Instruction_ld.instruction_group_index = i;
-                                        PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(Instruction_ld);
-                                        int interval_index = hash_value % node_interval + node_index * node_interval;
-                                        node_load_info.insert(interval_index);
-                                        node_input_reuse_record_for_element_num[interval_index] = Instruction_ld.element_num;
-                                        node_input_reuse_record_for_local_address[interval_index] = Instruction_ld.destination_address + Instruction_ld.destination_offset;
+                                        node_load_map[interval_index] = { Instruction_ld.element_num, Instruction_ld.destination_address + Instruction_ld.destination_offset };
+                                        PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(std::move(Instruction_ld));
                                     }
                                     else  // reuse
                                     {
@@ -270,14 +275,13 @@ void DataReload::ReloadInput()
                                         Instruction_vm.level_index = PIMCOMP_node_list[node_index].level_index;
                                         Instruction_vm.node_index = node_index;
                                         Instruction_vm.stage = "MAIN";
-//                                        Instruction_vm.source_address = node_input_reuse_record_for_local_address[node_index * node_interval + load_address_in_dram % node_interval];
-                                        Instruction_vm.source_address = node_input_reuse_record_for_local_address[node_index * node_interval + hash_value % node_interval];
+                                        Instruction_vm.source_address = it->second.local_address;
                                         Instruction_vm.source_offset = 0;
                                         Instruction_vm.destination_address = PIMCOMP_5_AG_memory_info[0].AG_memory_info_of_one_IG[j].AG_memory_info_of_one_core[AG_index].memory_start_address;
                                         Instruction_vm.destination_offset = rd_offset;
                                         Instruction_vm.element_num = element_num;
                                         Instruction_vm.instruction_group_index = i;
-                                        PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(Instruction_vm);
+                                        PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(std::move(Instruction_vm));
                                     }
                                 }
                                 rd_offset += element_num;
@@ -305,7 +309,7 @@ void DataReload::ReloadInput()
                         Instruction_ld.destination_offset = 0;
                         Instruction_ld.element_num = FC_end_position - FC_start_position + 1;
                         Instruction_ld.instruction_group_index = i;
-                        PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(Instruction_ld);
+                        PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(std::move(Instruction_ld));
                     }
                 }
                 if (tmpInstruction.operation == "RECV" || tmpInstruction.operation == "SEND")
@@ -322,13 +326,8 @@ void DataReload::ReloadInput()
                     }
                     tmpInstruction.instruction_index_in_core = PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.size();
                 }
-                PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(tmpInstruction);
+                PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(std::move(tmpInstruction));
             }
-//            for (auto k = node_load_info.begin(); k != node_load_info.end(); k++)
-//            {
-//                node_input_reuse_record_for_element_num[*k] = 0;
-//                node_input_reuse_record_for_local_address[*k] = 0;
-//            }
         }
     }
 }
@@ -340,15 +339,14 @@ void DataReload::StoreOutput()
     int instruction_group_num = PIMCOMP_6_base_instruction_with_input.size();
     for (int i = 0; i < instruction_group_num; ++i)
     {
+        if (PIMCOMP_6_base_instruction_with_input[i].core_list.size() == 0)
+            continue;
         for (int j = 0; j < ChipH * ChipW; ++j)
         {
-            if (PIMCOMP_6_base_instruction_with_input[i].core_list.size() == 0)
-                continue;
-            PIMCOMP_6_base_instruction_with_input[i].core_list.resize(ChipH * ChipW);
             int instruction_ir_num = PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.size();
             for (int k = 0; k < instruction_ir_num; ++k)
             {
-                struct INST tmpInstruction = PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list[k];
+                const struct INST& tmpInstruction = PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list[k];
                 if (tmpInstruction.operation == "MVMUL") //// LOAD
                 {
                     int node_index = tmpInstruction.node_index;
@@ -383,7 +381,7 @@ void DataReload::StoreOutput()
                         Instruction_st.destination_offset = rd_offset ;
                         Instruction_st.element_num = element_num;
                         Instruction_st.instruction_group_index = i;
-                        PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(Instruction_st);
+                        PIMCOMP_6_base_instruction_with_input[i].core_list[j].instruction_ir_list.push_back(std::move(Instruction_st));
                     }
                 }
             }
