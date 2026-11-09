@@ -27,7 +27,7 @@ static std::vector<std::vector<std::pair<long long, int>>> core_comm_volume_deta
 static std::vector<std::pair<long long, int>> each_core_comm_volume;
 
 
-void GetFourNeighbours(int core_index, std::set<int> already_mapped_core, std::vector<int> & four_neighbours)
+void GetFourNeighbours(int core_index, const std::set<int>& already_mapped_core, std::vector<int> & four_neighbours)
 {
     for (int i = 0; i < ChipH * ChipW; ++i)
     {
@@ -214,9 +214,8 @@ void ElementPlacement::PlaceCore()
             for (int j = 0; j < ChipH * ChipW; ++j)
             {
                 int physical_core = PIMCOMP_8_virtual_core_to_physical_core_map[j];
-                PIMCOMP_8_base_instruction_ir_with_placement[i].core_list[physical_core].instruction_ir_list.assign(
-                    base_instruction_ir->at(i).core_list[j].instruction_ir_list.begin(),
-                    base_instruction_ir->at(i).core_list[j].instruction_ir_list.end());
+                PIMCOMP_8_base_instruction_ir_with_placement[i].core_list[physical_core].instruction_ir_list =
+                    std::move(base_instruction_ir->at(i).core_list[j].instruction_ir_list);
             }
         }
     }

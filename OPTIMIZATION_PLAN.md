@@ -6,28 +6,20 @@
 - [x] Phase 1: 验证 Python 环境，修复验证程序内存分配溢出与 uint/int 越界告警，确保验证系统可用。
 - [x] Phase 1: 完成项目完整架构分析（`ARCH_ANALYSIS.md`）。
 - [x] Phase 1: 建立初始性能基线报告（`INITIAL_BENCHMARK.md`）。
+- [x] Round 1: 编译器与构建系统升级（C++17, -O3, -march=native, -DNDEBUG），实现全模型 2.7x 平均加速，已验证提交（Commit: 007d28f）。
+- [x] Round 2: 消除海量 10^9 周期模拟数组与内存泄漏，引入动态位图与 GA Epoch ID 代际标记复位，已验证提交（Commit: 2510c1b）。
+- [x] Round 3: 消除指令优化与放置阶段深拷贝，引入移动语义、引用传递、容量预留与 unordered_map，全模型耗时进一步减半（较基准加速 2.36x ~ 3.78x），常驻内存减少 150MB~367MB。
 
-## 二、优化方向规划 (至少 5 轮完整迭代)
+## 二、后续优化方向规划
 
-### Round 1: 编译器优化标志与工程级构建系统升级
-- **方向**：引入现代 C++17 标准、`-O3` 激进优化、`-march=native` 向量化指令集、`-DNDEBUG` 消除不必要的断言与调试开销。
-- **目标**：以极小风险显著降低编译执行耗时（预期 2x~3x 加速），作为后续算法优化的稳固编译底座。
+### Round 4: 遗传算法 (GA) 适应度缓存与高效种群演化优化
+- **方向**：在 `backend/GeneticAlgorithm.cpp` 中，每次交叉和变异产生的新染色体经常出现重复片段或相同拓扑配置，但原始代码无条件调用耗时的 `FastEvaluation`；引入染色体特征哈希缓存（Memoization / Hash Map）与无效个体早停剪枝，避免重复模拟；优化轮盘赌选择与染色体拷贝。
+- **目标**：显著提升 GA 架构搜索吞吐，降低 AlexNet-GA 运行耗时，并保持/提升最终搜索到的硬件延迟表现。
 
-### Round 2: 消除海量周期级模拟数组分配与内存泄露
-- **方向**：重构 `ModelEvaluation`、`HierarchyMapping` 与 `GeneticAlgorithm` 中的周期占用位图。
-- **目标**：彻底消除 `new bool[1000000000]`（每轮 16GB~32GB 虚拟内存频繁 mmap/munmap）和 `WB_cycle_flag` 内存泄漏，大幅降低峰值内存（目标减少 60%~80%），提升缓存局部性与执行速度。
+### Round 5: 指令生成与调度优化增强 (Peephole / Redundant Load & Sync Elimination)
+- **方向**：在指令合并与优化阶段 (`backend/InstructionOptimization.cpp` 与 `BatchPipelineSchedule.cpp`)，深入分析相邻计算核心间的数据传输，识别并消除相邻周期间冗余的数据 Reload 与多余同步指令。
+- **目标**：缩减生成的总指令数（尤其是 COMM 和 MEM 指令），直接缩短硬件仿真延迟 (Practical Latency)。
 
-### Round 3: 核心数据结构与高频查找优化
-- **方向**：在指令生成与调度中，消除热点路径上的低效 `std::map<int, ...>` 与 `std::string` 比较，改用紧凑哈希表/直接扁平数组索引与枚举操作。
-- **目标**：优化 `ElementPipelineSchedule` 与 `BatchPipelineSchedule` 中的节点信息查询与内存查找效率。
-
-### Round 4: 指令生成与调度优化增强
-- **方向**：指令重排与消除通道冗余传输，优化 `InstructionOptimization.cpp`，消除重复的输入加载与多余的中间暂存指令。
-- **目标**：降低生成的最终指令总数（尤其是 COMM 和 MEM 指令数），缩短硬件端到端推理周期 (practical latency)。
-
-### Round 5: 遗传算法 (GA) 搜索效率与适应度快速评估优化
-- **方向**：重构 GA 染色体评估流水线，引入适应度结果局部缓存与无效个体早停剪枝机制，提升个体突变收敛速度。
-- **目标**：在相同迭代次数下加快 GA 运行速度 2x 以上，或在相同时间内搜索出更优的硬件映射方案。
-
-### Round 6+ (持续迭代)：
-- 探索多线程并行评估（OpenMP/std::async 并行评估 GA 种群）、层次化核心映射距离权重建模等。
+### Round 6 (持续探索): OpenMP 多核多线程并行化加速
+- **方向**：在 GA 种群适应度评估循环及独立 Array Group 拓扑切分计算中引入 OpenMP 多核多线程并行化 (`#pragma omp parallel for`)。
+- **目标**：充分利用现代多核 CPU，将空间探索速度提升数倍。
