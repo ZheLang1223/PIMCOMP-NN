@@ -160,9 +160,9 @@ class Memory:
     def __init__(self, core_num):
         self.core_num = core_num
         self.local_memory_max_size = 262144*4 # this size is element_num. 512kB * 4 / 16bit = 262144 * 4
-        self.local_memory = np.zeros((self.core_num, self.local_memory_max_size))
-        self.global_memory_max_size = 536870912*4 # this size is element_num. 1GB * 4/ 16bit = 536870912 * 4
-        self.global_memory = np.zeros(self.global_memory_max_size)
+        self.local_memory = np.zeros((self.core_num, self.local_memory_max_size), dtype=np.float32)
+        self.global_memory_max_size = 67108864 # this size is element_num. 1GB * 4/ 16bit = 536870912 * 4
+        self.global_memory = np.zeros(self.global_memory_max_size, dtype=np.float32)
 
 
 class Verification(ModelInfo):
@@ -247,10 +247,10 @@ class Verification(ModelInfo):
                     self.GEMMWeightDict[weight_name] = weight_matrix.reshape(weight_matrix[:, :, :, 0].size, weight_shape[3])
 
         self.core_num = len(self.FinalInfo["instruction"]["core_list"])
-        self.visited_single = np.zeros((1000000), dtype=np.int16)
+        self.visited_single = np.zeros((1000000), dtype=np.int64)
         self.comm_index_2_index_in_core = {}
         self.comm_index_2_core_index = {}
-        self.inst_num_traversal = np.zeros((self.core_num), dtype=np.int16)
+        self.inst_num_traversal = np.zeros((self.core_num), dtype=np.int64)
         self.CoreMemory = Memory(self.core_num)
         for core_idx in range(self.core_num):
             if self.FinalInfo["instruction"]["core_list"][core_idx] != None:
