@@ -1,0 +1,80 @@
+{
+  "alexnet_balance_batch": {
+    "model": "alexnet",
+    "replicating": "balance",
+    "pipeline": "batch",
+    "wall_time_s": 3.0836262702941895,
+    "reported_time_s": 2.83,
+    "max_rss_mb": 903.58984375,
+    "practical_latency_ns": 293802.0,
+    "mvmul_count": 32096,
+    "comm_count": 1832,
+    "mem_count": 35110,
+    "exit_code": 0
+  },
+  "resnet18_balance_batch": {
+    "model": "resnet18",
+    "replicating": "balance",
+    "pipeline": "batch",
+    "wall_time_s": 7.076130151748657,
+    "reported_time_s": 6.47,
+    "max_rss_mb": 1944.1015625,
+    "practical_latency_ns": 470023.0,
+    "mvmul_count": 132500,
+    "comm_count": 3604,
+    "mem_count": 111633,
+    "exit_code": 0
+  },
+  "squeezenet_balance_element": {
+    "model": "squeezenet",
+    "replicating": "balance",
+    "pipeline": "element",
+    "wall_time_s": 5.816750526428223,
+    "reported_time_s": 5.04,
+    "max_rss_mb": 1685.5703125,
+    "practical_latency_ns": 2971658.0,
+    "mvmul_count": 50962,
+    "comm_count": 144198,
+    "mem_count": 37778,
+    "exit_code": 0
+  },
+  "vgg16_balance_batch": {
+    "model": "vgg16",
+    "replicating": "balance",
+    "pipeline": "batch",
+    "wall_time_s": 1.5624642372131348,
+    "reported_time_s": 0.0,
+    "max_rss_mb": 48.87109375,
+    "practical_latency_ns": 0.0,
+    "mvmul_count": 0,
+    "comm_count": 0,
+    "mem_count": 0,
+    "exit_code": 134
+  },
+  "mobilenetv2_balance_batch": {
+    "model": "mobilenetv2",
+    "replicating": "balance",
+    "pipeline": "batch",
+    "wall_time_s": 5.87248420715332,
+    "reported_time_s": 6.61,
+    "max_rss_mb": 2322.75390625,
+    "practical_latency_ns": 1252413.0,
+    "mvmul_count": 244961,
+    "comm_count": 16870,
+    "mem_count": 289762,
+    "exit_code": 0
+  },
+  "alexnet_GA_batch": {
+    "model": "alexnet",
+    "replicating": "GA",
+    "pipeline": "batch",
+    "wall_time_s": 8.184122323989868,
+    "reported_time_s": 7.7,
+    "max_rss_mb": 907.40234375,
+    "practical_latency_ns": 172702.0,
+    "mvmul_count": 32096,
+    "comm_count": 1850,
+    "mem_count": 33436,
+    "exit_code": 0
+  }
+}
